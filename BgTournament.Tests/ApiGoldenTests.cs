@@ -1,0 +1,145 @@
+using System.Text.Json;
+using BgTournament.Api;
+
+namespace BgTournament.Tests;
+
+/// <summary>
+/// Pins the exact JSON of every admin-API shape, the same discipline
+/// <see cref="GoldenWireTests"/> applies to the wire: BgTournament.Api is the
+/// contract BgArena_Blazor consumes, so no refactor may change a byte of it
+/// silently. Serialization uses ASP.NET Core's Web defaults — the contracts
+/// are self-describing (per-member string-enum pins), so the host needs no
+/// converter configuration and neither does a consumer.
+/// </summary>
+public class ApiGoldenTests
+{
+    private static readonly JsonSerializerOptions WebJson = new(JsonSerializerDefaults.Web);
+
+    private static void AssertGolden<T>(T value, string golden)
+    {
+        Assert.Equal(golden, JsonSerializer.Serialize(value, WebJson));
+        Assert.Equal(golden, JsonSerializer.Serialize(JsonSerializer.Deserialize<T>(golden, WebJson), WebJson));
+    }
+
+    [Theory]
+    [InlineData(MatchStatus.Running, "running")]
+    [InlineData(MatchStatus.Completed, "completed")]
+    [InlineData(MatchStatus.Forfeited, "forfeited")]
+    [InlineData(MatchStatus.Aborted, "aborted")]
+    [InlineData(MatchStatus.Faulted, "faulted")]
+    public void MatchStatus_EveryMember(MatchStatus status, string wire) =>
+        AssertGolden(status, $"\"{wire}\"");
+
+    [Theory]
+    [InlineData(TournamentStatus.Running, "running")]
+    [InlineData(TournamentStatus.Completed, "completed")]
+    [InlineData(TournamentStatus.Aborted, "aborted")]
+    [InlineData(TournamentStatus.Faulted, "faulted")]
+    public void TournamentStatus_EveryMember(TournamentStatus status, string wire) =>
+        AssertGolden(status, $"\"{wire}\"");
+
+    /// <summary>
+    /// Detail strings often quote engine names; the Web-default encoder
+    /// escapes the apostrophe, and that escaping is part of the pinned bytes.
+    /// </summary>
+    [Fact]
+    public void ErrorResponse_Golden_ApostrophesEscape() =>
+        AssertGolden(
+            new ErrorResponse("No engine named 'Ghost' is connected."),
+            """{"error":"No engine named \u0027Ghost\u0027 is connected."}""");
+
+    [Fact]
+    public void EngineSummary_AllFields() =>
+        AssertGolden(
+            new EngineSummary("MyBot", "2.1", "Jane Doe", InMatch: true),
+            """{"name":"MyBot","version":"2.1","author":"Jane Doe","inMatch":true}""");
+
+    [Fact]
+    public void EngineSummary_OptionalFieldsNull() =>
+        AssertGolden(
+            new EngineSummary("MyBot", Version: null, Author: null, InMatch: false),
+            """{"name":"MyBot","version":null,"author":null,"inMatch":false}""");
+
+    [Fact]
+    public void StartMatchRequest_Golden() =>
+        AssertGolden(
+            new StartMatchRequest("Alpha", "Beta", MatchLength: 7, Seed: 42, MaxGames: 50),
+            """{"engineOne":"Alpha","engineTwo":"Beta","matchLength":7,"seed":42,"maxGames":50}""");
+
+    [Fact]
+    public void StartMatchRequest_OptionalFieldsNull() =>
+        AssertGolden(
+            new StartMatchRequest("Alpha", "Beta", MatchLength: 7),
+            """{"engineOne":"Alpha","engineTwo":"Beta","matchLength":7,"seed":null,"maxGames":null}""");
+
+    [Fact]
+    public void MatchSummary_Running() =>
+        AssertGolden(
+            new MatchSummary(
+                "match-1", "Alpha", "Beta", MatchLength: 7, MaxGames: null, Seed: 42,
+                MatchStatus.Running, Winner: null, SeatOneScore: null, SeatTwoScore: null,
+                ForfeitedBy: null, Detail: null),
+            """{"matchId":"match-1","engineOne":"Alpha","engineTwo":"Beta","matchLength":7,"maxGames":null,"seed":42,"status":"running","winner":null,"seatOneScore":null,"seatTwoScore":null,"forfeitedBy":null,"detail":null}""");
+
+    [Fact]
+    public void MatchSummary_Completed() =>
+        AssertGolden(
+            new MatchSummary(
+                "match-1", "Alpha", "Beta", MatchLength: 3, MaxGames: null, Seed: 42,
+                MatchStatus.Completed, Winner: "Alpha", SeatOneScore: 3, SeatTwoScore: 1,
+                ForfeitedBy: null, Detail: null),
+            """{"matchId":"match-1","engineOne":"Alpha","engineTwo":"Beta","matchLength":3,"maxGames":null,"seed":42,"status":"completed","winner":"Alpha","seatOneScore":3,"seatTwoScore":1,"forfeitedBy":null,"detail":null}""");
+
+    [Fact]
+    public void MatchSummary_Forfeited() =>
+        AssertGolden(
+            new MatchSummary(
+                "match-1", "Alpha", "Beta", MatchLength: 3, MaxGames: null, Seed: 42,
+                MatchStatus.Forfeited, Winner: "Beta", SeatOneScore: null, SeatTwoScore: null,
+                ForfeitedBy: "Alpha", Detail: "Engine 'Alpha' disconnected mid-match."),
+            """{"matchId":"match-1","engineOne":"Alpha","engineTwo":"Beta","matchLength":3,"maxGames":null,"seed":42,"status":"forfeited","winner":"Beta","seatOneScore":null,"seatTwoScore":null,"forfeitedBy":"Alpha","detail":"Engine \u0027Alpha\u0027 disconnected mid-match."}""");
+
+    [Fact]
+    public void StartTournamentRequest_Golden() =>
+        AssertGolden(
+            new StartTournamentRequest(["Alpha", "Beta"], MatchLength: 3, MatchesPerPairing: 2, Seed: 7),
+            """{"participants":["Alpha","Beta"],"matchLength":3,"matchesPerPairing":2,"seed":7}""");
+
+    [Fact]
+    public void StandingEntry_Golden() =>
+        AssertGolden(
+            new StandingEntry(Rank: 1, "Alpha", Wins: 3, Losses: 1, SonnebornBerger: 2),
+            """{"rank":1,"participant":"Alpha","wins":3,"losses":1,"sonnebornBerger":2}""");
+
+    [Fact]
+    public void TournamentMatchEntry_Unreached() =>
+        AssertGolden(
+            new TournamentMatchEntry(
+                Index: 0, "Alpha", "Beta", Seed: 1234, MatchId: null, Status: null, Winner: null),
+            """{"index":0,"seatOne":"Alpha","seatTwo":"Beta","seed":1234,"matchId":null,"status":null,"winner":null}""");
+
+    [Fact]
+    public void TournamentMatchEntry_Decided() =>
+        AssertGolden(
+            new TournamentMatchEntry(
+                Index: 1, "Beta", "Alpha", Seed: 99, MatchId: "match-2",
+                Status: MatchStatus.Completed, Winner: "Beta"),
+            """{"index":1,"seatOne":"Beta","seatTwo":"Alpha","seed":99,"matchId":"match-2","status":"completed","winner":"Beta"}""");
+
+    [Fact]
+    public void TournamentSummary_Golden() =>
+        AssertGolden(
+            new TournamentSummary(
+                "tournament-1", ["Alpha", "Beta"], MatchLength: 1, MatchesPerPairing: 1, Seed: 7,
+                TournamentStatus.Completed, Winner: "Alpha", Detail: null,
+                Standings:
+                [
+                    new StandingEntry(1, "Alpha", 1, 0, 0),
+                    new StandingEntry(2, "Beta", 0, 1, 0),
+                ],
+                Matches:
+                [
+                    new TournamentMatchEntry(0, "Alpha", "Beta", 1234, "match-1", MatchStatus.Completed, "Alpha"),
+                ]),
+            """{"tournamentId":"tournament-1","participants":["Alpha","Beta"],"matchLength":1,"matchesPerPairing":1,"seed":7,"status":"completed","winner":"Alpha","detail":null,"standings":[{"rank":1,"participant":"Alpha","wins":1,"losses":0,"sonnebornBerger":0},{"rank":2,"participant":"Beta","wins":0,"losses":1,"sonnebornBerger":0}],"matches":[{"index":0,"seatOne":"Alpha","seatTwo":"Beta","seed":1234,"matchId":"match-1","status":"completed","winner":"Alpha"}]}""");
+}

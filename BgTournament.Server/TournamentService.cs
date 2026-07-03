@@ -1,25 +1,10 @@
 using System.Collections.Concurrent;
+using BgTournament.Api;
 using BgTournament.Core;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
 namespace BgTournament.Server;
-
-/// <summary>How a hosted tournament concluded (or that it has not yet).</summary>
-internal enum TournamentStatus
-{
-    /// <summary>Matches are still being played.</summary>
-    Running,
-
-    /// <summary>Every scheduled match has a result and the winner is declared.</summary>
-    Completed,
-
-    /// <summary>Stopped by the server (shutdown), no side at fault.</summary>
-    Aborted,
-
-    /// <summary>A match ended without a winner to fold, or an unexpected server error; see the detail and logs.</summary>
-    Faulted,
-}
 
 /// <summary>Why a tournament could not be started.</summary>
 internal enum StartTournamentError
@@ -183,7 +168,7 @@ internal sealed class TournamentService
         lock (record.Gate)
         {
             var tournament = record.Tournament;
-            var standings = tournament.ComputeStandings().Select(StandingEntry.From).ToArray();
+            var standings = tournament.ComputeStandings().Select(ApiMapping.ToStandingEntry).ToArray();
             var matches = tournament.Schedule
                 .Select(scheduled =>
                 {

@@ -1,5 +1,6 @@
 using BgGame_Lib;
 using BgInference;
+using BgTournament.Api;
 using BgTournament.EngineClient;
 using BgTournament.Server;
 using Microsoft.Extensions.DependencyInjection;

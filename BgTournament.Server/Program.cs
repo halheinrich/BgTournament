@@ -1,4 +1,4 @@
-using System.Text.Json.Serialization;
+using BgTournament.Api;
 using BgTournament.Server;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -7,8 +7,6 @@ builder.Services.Configure<TournamentOptions>(builder.Configuration.GetSection("
 builder.Services.AddSingleton<EngineRegistry>();
 builder.Services.AddSingleton<MatchService>();
 builder.Services.AddSingleton<TournamentService>();
-builder.Services.ConfigureHttpJsonOptions(options =>
-    options.SerializerOptions.Converters.Add(new JsonStringEnumConverter(System.Text.Json.JsonNamingPolicy.CamelCase)));
 
 var app = builder.Build();
 
@@ -17,9 +15,11 @@ app.UseWebSockets();
 // The engine wire endpoint (PROTOCOL.md).
 app.Map("/engine", EngineSocketEndpoint.HandleAsync);
 
-// Minimal admin surface (v1): list engines, start a match, read a match.
+// The admin HTTP surface. Its shapes are the BgTournament.Api contracts —
+// self-describing (string enums are pinned per member), so no serializer
+// configuration is needed here beyond ASP.NET Core's Web defaults.
 app.MapGet("/engines", (EngineRegistry registry) =>
-    Results.Ok(registry.Snapshot().Select(EngineSummary.From)));
+    Results.Ok(registry.Snapshot().Select(ApiMapping.ToSummary)));
 
 app.MapPost("/matches", (StartMatchRequest request, MatchService matches) =>
 {
@@ -27,16 +27,16 @@ app.MapPost("/matches", (StartMatchRequest request, MatchService matches) =>
         request.EngineOne, request.EngineTwo, request.MatchLength, request.Seed, request.MaxGames);
     return error switch
     {
-        StartMatchError.None => Results.Ok(MatchSummary.From(record!)),
-        StartMatchError.UnknownEngine => Results.NotFound(new { error = detail }),
-        StartMatchError.EngineBusy or StartMatchError.SameEngine => Results.Conflict(new { error = detail }),
-        _ => Results.BadRequest(new { error = detail }),
+        StartMatchError.None => Results.Ok(record!.ToSummary()),
+        StartMatchError.UnknownEngine => Results.NotFound(new ErrorResponse(detail!)),
+        StartMatchError.EngineBusy or StartMatchError.SameEngine => Results.Conflict(new ErrorResponse(detail!)),
+        _ => Results.BadRequest(new ErrorResponse(detail!)),
     };
 });
 
 app.MapGet("/matches/{matchId}", (string matchId, MatchService matches) =>
     matches.TryGetRecord(matchId, out var record)
-        ? Results.Ok(MatchSummary.From(record))
+        ? Results.Ok(record.ToSummary())
         : Results.NotFound());
 
 // Round-robin tournaments: server-side orchestration over the same match
@@ -48,9 +48,9 @@ app.MapPost("/tournaments", (StartTournamentRequest request, TournamentService t
     return error switch
     {
         StartTournamentError.None => Results.Ok(tournaments.Summarize(record!)),
-        StartTournamentError.UnknownEngine => Results.NotFound(new { error = detail }),
-        StartTournamentError.EngineBusy => Results.Conflict(new { error = detail }),
-        _ => Results.BadRequest(new { error = detail }),
+        StartTournamentError.UnknownEngine => Results.NotFound(new ErrorResponse(detail!)),
+        StartTournamentError.EngineBusy => Results.Conflict(new ErrorResponse(detail!)),
+        _ => Results.BadRequest(new ErrorResponse(detail!)),
     };
 });
 

@@ -1,30 +1,12 @@
 using System.Collections.Concurrent;
 using BgGame_Lib;
+using BgTournament.Api;
 using BgTournament.Protocol;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
 namespace BgTournament.Server;
-
-/// <summary>How a hosted match concluded (or that it has not yet).</summary>
-internal enum MatchStatus
-{
-    /// <summary>Still being played.</summary>
-    Running,
-
-    /// <summary>Played to a natural end — a winner, or the games cap.</summary>
-    Completed,
-
-    /// <summary>Ended by a forfeit: contract violation, timeout, or disconnect.</summary>
-    Forfeited,
-
-    /// <summary>Stopped by the server (shutdown), no side at fault.</summary>
-    Aborted,
-
-    /// <summary>An unexpected server-side error; see the detail and logs.</summary>
-    Faulted,
-}
 
 /// <summary>One hosted match: identity, configuration (seed always recorded — auditability), and outcome.</summary>
 internal sealed class MatchRecord
