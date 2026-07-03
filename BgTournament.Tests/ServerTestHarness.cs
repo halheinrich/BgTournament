@@ -1,0 +1,257 @@
+using System.Globalization;
+using System.Net.Http.Json;
+using System.Net.WebSockets;
+using System.Text;
+using System.Text.Json;
+using BgGame_Lib;
+using BgMoveGen;
+using BgTournament.EngineClient;
+using BgTournament.Protocol;
+using Microsoft.AspNetCore.Mvc.Testing;
+
+namespace BgTournament.Tests;
+
+/// <summary>Shared plumbing for wire-level server tests over TestServer.</summary>
+internal static class ServerHarness
+{
+    public static readonly TimeSpan ReceiveDeadline = TimeSpan.FromSeconds(10);
+
+    public static WebApplicationFactory<Program> NewFactory(double? decisionTimeoutSeconds = null) =>
+        new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
+        {
+            if (decisionTimeoutSeconds is { } seconds)
+            {
+                builder.UseSetting(
+                    "Tournament:DecisionTimeoutSeconds", seconds.ToString(CultureInfo.InvariantCulture));
+            }
+        });
+
+    /// <summary>
+    /// Connect a real EngineClient (random play, passive cube) — the connect
+    /// is awaited here so a failure surfaces in the test, not in a swallowed
+    /// background task — then serve in the background until teardown.
+    /// </summary>
+    public static async Task RunWellBehavedClientAsync(
+        WebApplicationFactory<Program> factory, string name, int seed, CancellationToken cancellationToken)
+    {
+        var socket = await factory.Server.CreateWebSocketClient()
+            .ConnectAsync(new Uri("ws://localhost/engine"), cancellationToken);
+        var client = new EngineClient.EngineClient(
+            new EngineIdentity(name), new RandomPlayAgent(seed), new PassiveCubeAgent());
+        _ = Task.Run(
+            async () =>
+            {
+                try
+                {
+                    await client.ServeAsync(socket, cancellationToken);
+                }
+                catch (Exception ex) when (ex is OperationCanceledException or WebSocketException or IOException)
+                {
+                    // Test teardown: server or token ended the session.
+                }
+            },
+            CancellationToken.None);
+    }
+
+    public static async Task WaitForEnginesAsync(WebApplicationFactory<Program> factory, params string[] names)
+    {
+        using var http = factory.CreateClient();
+        var deadline = DateTime.UtcNow + ReceiveDeadline;
+        while (DateTime.UtcNow < deadline)
+        {
+            var engines = await http.GetFromJsonAsync<JsonElement>("/engines");
+            var connected = engines.EnumerateArray().Select(e => e.GetProperty("name").GetString()).ToHashSet();
+            if (names.All(connected.Contains))
+            {
+                return;
+            }
+
+            await Task.Delay(25);
+        }
+
+        Assert.Fail($"Engines [{string.Join(", ", names)}] did not all register within {ReceiveDeadline}.");
+    }
+
+    public static async Task<JsonElement> StartMatchAsync(
+        WebApplicationFactory<Program> factory,
+        string engineOne,
+        string engineTwo,
+        int matchLength,
+        int seed,
+        int? maxGames = null)
+    {
+        using var http = factory.CreateClient();
+        var response = await http.PostAsJsonAsync(
+            "/matches",
+            new { engineOne, engineTwo, matchLength, seed, maxGames });
+        var body = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.True(response.IsSuccessStatusCode, $"POST /matches failed: {response.StatusCode} {body}");
+        return body;
+    }
+
+    public static async Task<JsonElement> GetMatchAsync(WebApplicationFactory<Program> factory, string matchId)
+    {
+        using var http = factory.CreateClient();
+        return await http.GetFromJsonAsync<JsonElement>($"/matches/{matchId}");
+    }
+
+    /// <summary>Poll the match record until it leaves <c>running</c>.</summary>
+    public static async Task<JsonElement> WaitForMatchEndAsync(
+        WebApplicationFactory<Program> factory, string matchId)
+    {
+        var deadline = DateTime.UtcNow + ReceiveDeadline;
+        while (DateTime.UtcNow < deadline)
+        {
+            var match = await GetMatchAsync(factory, matchId);
+            if (match.GetProperty("status").GetString() != "running")
+            {
+                return match;
+            }
+
+            await Task.Delay(25);
+        }
+
+        throw new TimeoutException($"Match {matchId} still running after {ReceiveDeadline}.");
+    }
+
+    /// <summary>
+    /// The first seed in 1.. whose opening roll (after re-rolled ties) gives
+    /// seat One the higher die — i.e. seat One is queried first. Computed
+    /// from the substrate's own SeededDiceSource, not re-derived.
+    /// </summary>
+    public static int SeedWhereSeatOneMovesFirst()
+    {
+        for (int seed = 1; seed < 1000; seed++)
+        {
+            var dice = new SeededDiceSource(seed);
+            (int die1, int die2) = dice.Roll();
+            while (die1 == die2)
+            {
+                (die1, die2) = dice.Roll();
+            }
+
+            if (die1 > die2)
+            {
+                return seed;
+            }
+        }
+
+        throw new InvalidOperationException("No qualifying seed below 1000 — implausible.");
+    }
+}
+
+/// <summary>
+/// A scriptable raw-wire engine: the tests speak the protocol directly (and
+/// can deliberately break it) instead of going through the SDK.
+/// </summary>
+internal sealed class TestEngine : IAsyncDisposable
+{
+    private readonly WebSocket _socket;
+    private readonly ProtocolSocket _channel;
+
+    private TestEngine(WebSocket socket, string name)
+    {
+        _socket = socket;
+        _channel = new ProtocolSocket(socket);
+        Name = name;
+    }
+
+    public string Name { get; }
+
+    public static async Task<TestEngine> ConnectAsync(
+        WebApplicationFactory<Program> factory,
+        string name,
+        int protocolVersion = WireProtocol.Version,
+        bool expectWelcome = true)
+    {
+        var socket = await factory.Server.CreateWebSocketClient()
+            .ConnectAsync(new Uri("ws://localhost/engine"), CancellationToken.None);
+        var engine = new TestEngine(socket, name);
+        await engine.SendAsync(new HelloMessage { ProtocolVersion = protocolVersion, EngineName = name });
+        if (expectWelcome)
+        {
+            await engine.ExpectAsync<WelcomeMessage>();
+        }
+
+        return engine;
+    }
+
+    public Task SendAsync(ProtocolMessage message) =>
+        _channel.SendAsync(message, CancellationToken.None);
+
+    /// <summary>Send raw text — the deliberately-malformed-frame lever.</summary>
+    public Task SendRawAsync(string text) =>
+        _socket.SendAsync(
+            Encoding.UTF8.GetBytes(text), WebSocketMessageType.Text, endOfMessage: true, CancellationToken.None);
+
+    public async Task<ProtocolMessage?> ReceiveAsync()
+    {
+        using var timeout = new CancellationTokenSource(ServerHarness.ReceiveDeadline);
+        return await _channel.ReceiveAsync(timeout.Token);
+    }
+
+    /// <summary>Receive, optionally skipping matchStarted, and assert the message type.</summary>
+    public async Task<T> ExpectAsync<T>(bool skipMatchStarted = false)
+        where T : ProtocolMessage
+    {
+        while (true)
+        {
+            var message = await ReceiveAsync();
+            Assert.NotNull(message);
+            if (skipMatchStarted && message is MatchStartedMessage)
+            {
+                continue;
+            }
+
+            return Assert.IsType<T>(message);
+        }
+    }
+
+    /// <summary>
+    /// The next decision query, skipping matchStarted; cube-offer queries are
+    /// answered noDouble along the way when <paramref name="declineCubeOffers"/>.
+    /// </summary>
+    public async Task<PlayQueryMessage> ExpectPlayQueryAsync(bool declineCubeOffers = true)
+    {
+        while (true)
+        {
+            var message = await ReceiveAsync();
+            Assert.NotNull(message);
+            switch (message)
+            {
+                case PlayQueryMessage play:
+                    return play;
+                case CubeOfferQueryMessage offer when declineCubeOffers:
+                    await SendAsync(new CubeOfferReplyMessage
+                    {
+                        RequestId = offer.RequestId,
+                        Action = CubeOfferAction.NoDouble,
+                    });
+                    break;
+                case MatchStartedMessage:
+                    break;
+                default:
+                    Assert.Fail($"Expected a play query, got {message.GetType().Name}.");
+                    break;
+            }
+        }
+    }
+
+    /// <summary>Answer a play query with the first legal play (computed from the wire state).</summary>
+    public async Task ReplyWithFirstLegalPlayAsync(PlayQueryMessage query)
+    {
+        var state = query.State.ToGameState();
+        var candidates = MoveGenerator.GeneratePlays(state.Board, query.Die1, query.Die2);
+        var play = candidates.Count == 0 ? default : candidates[0];
+        await SendAsync(new PlayReplyMessage { RequestId = query.RequestId, Moves = play.ToWireMoves() });
+    }
+
+    /// <summary>Tear the connection down abruptly (the disconnect lever).</summary>
+    public void Abort() => _socket.Abort();
+
+    public ValueTask DisposeAsync()
+    {
+        _socket.Dispose();
+        return ValueTask.CompletedTask;
+    }
+}

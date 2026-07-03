@@ -244,7 +244,9 @@ The server forfeits an engine's match when the engine:
 - **disconnects** while in a match — even while its opponent is thinking.
 
 The forfeiting engine's opponent wins the match. Both engines are informed via
-`matchEnded` (`reason: "forfeit"`); the offender's connection is then closed.
+`matchEnded` (`reason: "forfeit"`) where their connections still permit it (an
+engine that disconnected or sent unparseable frames may not be reachable); the
+offender's connection is then closed.
 There is no sanction beyond the match: version 1 has no rating, suspension, or
 retry semantics.
 
