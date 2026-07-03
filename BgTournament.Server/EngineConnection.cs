@@ -159,7 +159,13 @@ internal sealed class EngineConnection : IEngineChannel
         }
     }
 
-    /// <summary>Send a notification (no reply expected). Sends are serialized with queries.</summary>
+    /// <summary>
+    /// Send a notification (no reply expected). Sends are serialized with
+    /// queries. A transport-level send failure surfaces as
+    /// <see cref="EngineDisconnectedException"/> — a connection that cannot be
+    /// written to is over for match purposes, even if the receive loop has not
+    /// observed the close yet (e.g. moments after a forfeit close).
+    /// </summary>
     public async Task SendAsync(ProtocolMessage message, CancellationToken cancellationToken)
     {
         await _sendLock.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -167,18 +173,27 @@ internal sealed class EngineConnection : IEngineChannel
         {
             await _channel.SendAsync(message, cancellationToken).ConfigureAwait(false);
         }
+        catch (Exception ex) when (ex is WebSocketException or ObjectDisposedException or InvalidOperationException)
+        {
+            throw new EngineDisconnectedException(EngineName, "the connection could not be written to.");
+        }
         finally
         {
             _sendLock.Release();
         }
     }
 
-    /// <summary>Close the connection gracefully (e.g. after a forfeit). Safe to call when already closed.</summary>
+    /// <summary>
+    /// Close the connection gracefully (e.g. after a forfeit). Sends the
+    /// close frame without waiting for the peer's acknowledgement — a
+    /// misbehaving engine may never send one, and the caller must not hang on
+    /// it. Safe to call when already closed.
+    /// </summary>
     public async Task CloseAsync(string reason)
     {
         try
         {
-            await _socket.CloseAsync(WebSocketCloseStatus.NormalClosure, reason, CancellationToken.None)
+            await _socket.CloseOutputAsync(WebSocketCloseStatus.NormalClosure, reason, CancellationToken.None)
                 .ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is WebSocketException or ObjectDisposedException or InvalidOperationException)

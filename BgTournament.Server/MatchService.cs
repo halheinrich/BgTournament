@@ -8,7 +8,7 @@ using Microsoft.Extensions.Options;
 namespace BgTournament.Server;
 
 /// <summary>How a hosted match concluded (or that it has not yet).</summary>
-internal enum TournamentMatchStatus
+internal enum MatchStatus
 {
     /// <summary>Still being played.</summary>
     Running,
@@ -27,7 +27,7 @@ internal enum TournamentMatchStatus
 }
 
 /// <summary>One hosted match: identity, configuration (seed always recorded — auditability), and outcome.</summary>
-internal sealed class TournamentMatchRecord
+internal sealed class MatchRecord
 {
     public required string MatchId { get; init; }
 
@@ -42,7 +42,7 @@ internal sealed class TournamentMatchRecord
     /// <summary>The dice seed. Recorded even when server-chosen, so any match can be re-rolled.</summary>
     public required int Seed { get; init; }
 
-    public TournamentMatchStatus Status { get; set; } = TournamentMatchStatus.Running;
+    public MatchStatus Status { get; set; } = MatchStatus.Running;
 
     /// <summary>Winning engine's name; null while running or when there is no winner.</summary>
     public string? Winner { get; set; }
@@ -64,6 +64,18 @@ internal sealed class TournamentMatchRecord
     /// for the umbrella). Export formats are a later arc.
     /// </summary>
     public MatchResult? Result { get; set; }
+
+    /// <summary>
+    /// Mark this match forfeited by the engine in <paramref name="seat"/>:
+    /// the opponent wins the match outright.
+    /// </summary>
+    public void RecordForfeit(int seat, string detail)
+    {
+        Status = MatchStatus.Forfeited;
+        ForfeitedBy = seat == 1 ? EngineOne : EngineTwo;
+        Winner = seat == 1 ? EngineTwo : EngineOne;
+        Detail = detail;
+    }
 }
 
 /// <summary>Why a match could not be started.</summary>
@@ -90,7 +102,10 @@ internal enum StartMatchError
 /// <see cref="MatchRunner"/> plays the match; this class owns what the
 /// substrate deliberately does not: seat ↔ engine attribution, the forfeit
 /// policy (v1: forfeit the match), proactive disconnect handling, lifecycle
-/// notifications, and record retention.
+/// notifications, and record retention. <see cref="TournamentService"/>
+/// reuses the hosting core (<see cref="CreateHostedMatch"/> +
+/// <see cref="RunHostedMatchAsync"/>) under its own tournament-wide engine
+/// claims.
 /// </summary>
 internal sealed class MatchService
 {
@@ -98,7 +113,7 @@ internal sealed class MatchService
     private readonly TournamentOptions _options;
     private readonly ILogger<MatchService> _logger;
     private readonly CancellationToken _serverStopping;
-    private readonly ConcurrentDictionary<string, TournamentMatchRecord> _records = new();
+    private readonly ConcurrentDictionary<string, MatchRecord> _records = new();
 
     public MatchService(
         EngineRegistry registry,
@@ -113,14 +128,14 @@ internal sealed class MatchService
     }
 
     /// <summary>Fetch a match record by id.</summary>
-    public bool TryGetRecord(string matchId, out TournamentMatchRecord record) =>
+    public bool TryGetRecord(string matchId, out MatchRecord record) =>
         _records.TryGetValue(matchId, out record!);
 
     /// <summary>
     /// Validate, claim both engines, and start the match in the background.
     /// Returns the running record, or the reason it could not start.
     /// </summary>
-    public (TournamentMatchRecord? Record, StartMatchError Error, string? ErrorDetail) StartMatch(
+    public (MatchRecord? Record, StartMatchError Error, string? ErrorDetail) StartMatch(
         string engineOne, string engineTwo, int matchLength, int? seed, int? maxGames)
     {
         if (matchLength < 0)
@@ -164,23 +179,55 @@ internal sealed class MatchService
             return (null, StartMatchError.EngineBusy, $"Engine '{engineTwo}' is already in a match.");
         }
 
-        var record = new TournamentMatchRecord
-        {
-            MatchId = Guid.NewGuid().ToString("N"),
-            EngineOne = sessionOne.Name,
-            EngineTwo = sessionTwo.Name,
-            MatchLength = matchLength,
-            MaxGames = maxGames,
-            Seed = seed ?? Random.Shared.Next(),
-        };
-        _records[record.MatchId] = record;
+        var record = CreateHostedMatch(
+            sessionOne.Name, sessionTwo.Name, matchLength, seed ?? Random.Shared.Next(), maxGames);
 
-        _ = Task.Run(() => RunMatchAsync(record, sessionOne, sessionTwo), CancellationToken.None);
+        _ = Task.Run(
+            async () =>
+            {
+                try
+                {
+                    await RunHostedMatchAsync(record, sessionOne, sessionTwo);
+                }
+                finally
+                {
+                    sessionOne.ExitMatch();
+                    sessionTwo.ExitMatch();
+                }
+            },
+            CancellationToken.None);
         return (record, StartMatchError.None, null);
     }
 
-    private async Task RunMatchAsync(
-        TournamentMatchRecord record, EngineSession sessionOne, EngineSession sessionTwo)
+    /// <summary>
+    /// Create and retain a Running record for a match this service will
+    /// host. The caller owns the engines' busy claims.
+    /// </summary>
+    public MatchRecord CreateHostedMatch(
+        string engineOne, string engineTwo, int matchLength, int seed, int? maxGames = null)
+    {
+        var record = new MatchRecord
+        {
+            MatchId = Guid.NewGuid().ToString("N"),
+            EngineOne = engineOne,
+            EngineTwo = engineTwo,
+            MatchLength = matchLength,
+            MaxGames = maxGames,
+            Seed = seed,
+        };
+        _records[record.MatchId] = record;
+        return record;
+    }
+
+    /// <summary>
+    /// Referee one already-claimed match to its end, folding the outcome
+    /// (result, forfeit, abort, fault) into the record and sending the wire
+    /// lifecycle notifications. Deliberately does not touch the engines' busy
+    /// flags — the caller that claimed them releases them, which lets a
+    /// tournament hold its participants across many matches.
+    /// </summary>
+    public async Task RunHostedMatchAsync(
+        MatchRecord record, EngineSession sessionOne, EngineSession sessionTwo)
     {
         using var matchCts = CancellationTokenSource.CreateLinkedTokenSource(_serverStopping);
         bool matchDone = false;
@@ -227,34 +274,34 @@ internal sealed class MatchService
                 MatchSeat.Two => record.EngineTwo,
                 _ => null,
             };
-            record.Status = TournamentMatchStatus.Completed;
+            record.Status = MatchStatus.Completed;
         }
         catch (AgentContractViolationException ex)
         {
-            RecordForfeit(record, seat: ex.Seat == MatchSeat.One ? 1 : 2, ex.Message);
+            record.RecordForfeit(seat: ex.Seat == MatchSeat.One ? 1 : 2, ex.Message);
         }
         catch (EngineTimeoutException ex)
         {
-            RecordForfeit(record, SeatOfEngine(record, ex.EngineName), ex.Message);
+            record.RecordForfeit(SeatOfEngine(record, ex.EngineName), ex.Message);
         }
         catch (EngineDisconnectedException ex)
         {
-            RecordForfeit(record, SeatOfEngine(record, ex.EngineName), ex.Message);
+            record.RecordForfeit(SeatOfEngine(record, ex.EngineName), ex.Message);
         }
         catch (OperationCanceledException) when (Volatile.Read(ref disconnectedSeat) != 0)
         {
             int seat = Volatile.Read(ref disconnectedSeat);
             string name = seat == 1 ? record.EngineOne : record.EngineTwo;
-            RecordForfeit(record, seat, $"Engine '{name}' disconnected mid-match.");
+            record.RecordForfeit(seat, $"Engine '{name}' disconnected mid-match.");
         }
         catch (OperationCanceledException)
         {
-            record.Status = TournamentMatchStatus.Aborted;
+            record.Status = MatchStatus.Aborted;
             record.Detail = "The server stopped the match.";
         }
         catch (Exception ex)
         {
-            record.Status = TournamentMatchStatus.Faulted;
+            record.Status = MatchStatus.Faulted;
             record.Detail = "Unexpected server error; see the server log.";
             _logger.LogError(ex, "Match {MatchId} faulted.", record.MatchId);
         }
@@ -265,19 +312,17 @@ internal sealed class MatchService
             // Aborted/Faulted have no wire vocabulary in v1 (PROTOCOL.md §7
             // defines matchComplete/gamesCapReached/forfeit) — those matches
             // end silently rather than lying about the reason.
-            if (record.Status is TournamentMatchStatus.Completed or TournamentMatchStatus.Forfeited)
+            if (record.Status is MatchStatus.Completed or MatchStatus.Forfeited)
             {
                 await NotifyEndedAsync(record, sessionOne, seat: 1);
                 await NotifyEndedAsync(record, sessionTwo, seat: 2);
             }
-            if (record.Status == TournamentMatchStatus.Forfeited)
+            if (record.Status == MatchStatus.Forfeited)
             {
                 var offender = record.ForfeitedBy == record.EngineOne ? sessionOne : sessionTwo;
                 await offender.Connection.CloseAsync("forfeit");
             }
 
-            sessionOne.ExitMatch();
-            sessionTwo.ExitMatch();
             _logger.LogInformation(
                 "Match {MatchId} ({EngineOne} vs {EngineTwo}, length {MatchLength}, seed {Seed}): {Status}. {Detail}",
                 record.MatchId, record.EngineOne, record.EngineTwo, record.MatchLength, record.Seed,
@@ -285,19 +330,11 @@ internal sealed class MatchService
         }
     }
 
-    private static int SeatOfEngine(TournamentMatchRecord record, string engineName) =>
+    private static int SeatOfEngine(MatchRecord record, string engineName) =>
         engineName == record.EngineOne ? 1 : 2;
 
-    private static void RecordForfeit(TournamentMatchRecord record, int seat, string detail)
-    {
-        record.Status = TournamentMatchStatus.Forfeited;
-        record.ForfeitedBy = seat == 1 ? record.EngineOne : record.EngineTwo;
-        record.Winner = seat == 1 ? record.EngineTwo : record.EngineOne;
-        record.Detail = detail;
-    }
-
     private async Task NotifyStartedAsync(
-        TournamentMatchRecord record, EngineSession session, string opponent, CancellationToken cancellationToken)
+        MatchRecord record, EngineSession session, string opponent, CancellationToken cancellationToken)
     {
         await session.Connection.SendAsync(
             new MatchStartedMessage
@@ -310,7 +347,7 @@ internal sealed class MatchService
             cancellationToken);
     }
 
-    private async Task NotifyEndedAsync(TournamentMatchRecord record, EngineSession session, int seat)
+    private async Task NotifyEndedAsync(MatchRecord record, EngineSession session, int seat)
     {
         // Points as attested by a completed run; a forfeit decides the match
         // itself, and v1 reports 0–0 for it (partial scores are lost with the
@@ -326,8 +363,8 @@ internal sealed class MatchService
                     MatchId = record.MatchId,
                     Reason = record.Status switch
                     {
-                        TournamentMatchStatus.Forfeited => MatchEndReason.Forfeit,
-                        TournamentMatchStatus.Completed when record.Winner is null => MatchEndReason.GamesCapReached,
+                        MatchStatus.Forfeited => MatchEndReason.Forfeit,
+                        MatchStatus.Completed when record.Winner is null => MatchEndReason.GamesCapReached,
                         _ => MatchEndReason.MatchComplete,
                     },
                     YourPoints = ownPoints,

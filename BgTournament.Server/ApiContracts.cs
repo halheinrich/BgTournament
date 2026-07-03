@@ -1,3 +1,5 @@
+using BgTournament.Core;
+
 namespace BgTournament.Server;
 
 /// <summary>
@@ -27,14 +29,14 @@ internal sealed record MatchSummary(
     int MatchLength,
     int? MaxGames,
     int Seed,
-    TournamentMatchStatus Status,
+    MatchStatus Status,
     string? Winner,
     int? SeatOneScore,
     int? SeatTwoScore,
     string? ForfeitedBy,
     string? Detail)
 {
-    public static MatchSummary From(TournamentMatchRecord record) =>
+    public static MatchSummary From(MatchRecord record) =>
         new(
             record.MatchId,
             record.EngineOne,
@@ -49,3 +51,48 @@ internal sealed record MatchSummary(
             record.ForfeitedBy,
             record.Detail);
 }
+
+/// <summary>
+/// The admin request that starts a round-robin tournament. Participants are
+/// connected-engine names in seeding order; the optional seed makes the whole
+/// tournament reproducible (server-chosen and recorded otherwise).
+/// </summary>
+internal sealed record StartTournamentRequest(
+    IReadOnlyList<string>? Participants,
+    int MatchLength,
+    int MatchesPerPairing,
+    int? Seed = null);
+
+/// <summary>One standings line in a tournament projection.</summary>
+internal sealed record StandingEntry(int Rank, string Participant, int Wins, int Losses, int SonnebornBerger)
+{
+    public static StandingEntry From(StandingsRow row) =>
+        new(row.Rank, row.Participant, row.Wins, row.Losses, row.SonnebornBerger);
+}
+
+/// <summary>
+/// One scheduled match in a tournament projection. MatchId, Status, and
+/// Winner are null until the tournament reaches that match; the id then
+/// resolves on <c>GET /matches/{matchId}</c>.
+/// </summary>
+internal sealed record TournamentMatchEntry(
+    int Index,
+    string SeatOne,
+    string SeatTwo,
+    int Seed,
+    string? MatchId,
+    MatchStatus? Status,
+    string? Winner);
+
+/// <summary>A tournament record projection, as returned by the tournament endpoints.</summary>
+internal sealed record TournamentSummary(
+    string TournamentId,
+    IReadOnlyList<string> Participants,
+    int MatchLength,
+    int MatchesPerPairing,
+    int Seed,
+    TournamentStatus Status,
+    string? Winner,
+    string? Detail,
+    IReadOnlyList<StandingEntry> Standings,
+    IReadOnlyList<TournamentMatchEntry> Matches);

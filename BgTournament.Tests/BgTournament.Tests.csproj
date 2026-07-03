@@ -18,6 +18,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\BgInference\BgInference\BgInference.csproj" />
+    <ProjectReference Include="..\BgTournament.Core\BgTournament.Core.csproj" />
     <ProjectReference Include="..\BgTournament.EngineClient\BgTournament.EngineClient.csproj" />
     <ProjectReference Include="..\BgTournament.Protocol\BgTournament.Protocol.csproj" />
     <ProjectReference Include="..\BgTournament.Server\BgTournament.Server.csproj" />

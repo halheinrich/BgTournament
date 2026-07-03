@@ -4,6 +4,7 @@ using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
 using BgGame_Lib;
+using BgInference;
 using BgMoveGen;
 using BgTournament.EngineClient;
 using BgTournament.Protocol;
@@ -15,6 +16,11 @@ namespace BgTournament.Tests;
 internal static class ServerHarness
 {
     public static readonly TimeSpan ReceiveDeadline = TimeSpan.FromSeconds(10);
+
+    /// <summary>The parity fixtures, consumed in place from the sibling checkout (never copied).</summary>
+    public static string ParityModelPath { get; } = Path.GetFullPath(Path.Combine(
+        AppContext.BaseDirectory, "..", "..", "..", "..", "..",
+        "BgRLEngine", "BgRLEngine", "parity", "model.onnx"));
 
     public static WebApplicationFactory<Program> NewFactory(double? decisionTimeoutSeconds = null) =>
         new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
@@ -51,6 +57,33 @@ internal static class ServerHarness
                 }
             },
             CancellationToken.None);
+    }
+
+    /// <summary>
+    /// Connect a real EngineClient over BgInference's agents (the dogfooding
+    /// door: exactly the way a third-party engine enters) — connect awaited
+    /// here, then served in the background until teardown.
+    /// </summary>
+    public static async Task RunBgInferenceClientAsync(
+        WebApplicationFactory<Program> factory, string name, OnnxEvaluator evaluator)
+    {
+        var socket = await factory.Server.CreateWebSocketClient()
+            .ConnectAsync(new Uri("ws://localhost/engine"), CancellationToken.None);
+        var client = new EngineClient.EngineClient(
+            new EngineIdentity(name, version: "parity-model"),
+            new OnePlyPlayAgent(evaluator),
+            new ThresholdCubeAgent(evaluator));
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await client.ServeAsync(socket);
+            }
+            catch (Exception ex) when (ex is OperationCanceledException or WebSocketException or IOException)
+            {
+                // Test teardown.
+            }
+        });
     }
 
     public static async Task WaitForEnginesAsync(WebApplicationFactory<Program> factory, params string[] names)
@@ -112,6 +145,49 @@ internal static class ServerHarness
         }
 
         throw new TimeoutException($"Match {matchId} still running after {ReceiveDeadline}.");
+    }
+
+    public static async Task<JsonElement> StartTournamentAsync(
+        WebApplicationFactory<Program> factory,
+        IReadOnlyList<string> participants,
+        int matchLength,
+        int matchesPerPairing,
+        int seed)
+    {
+        using var http = factory.CreateClient();
+        var response = await http.PostAsJsonAsync(
+            "/tournaments",
+            new { participants, matchLength, matchesPerPairing, seed });
+        var body = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.True(response.IsSuccessStatusCode, $"POST /tournaments failed: {response.StatusCode} {body}");
+        return body;
+    }
+
+    public static async Task<JsonElement> GetTournamentAsync(
+        WebApplicationFactory<Program> factory, string tournamentId)
+    {
+        using var http = factory.CreateClient();
+        return await http.GetFromJsonAsync<JsonElement>($"/tournaments/{tournamentId}");
+    }
+
+    /// <summary>Poll the tournament record until it leaves <c>running</c>.</summary>
+    public static async Task<JsonElement> WaitForTournamentEndAsync(
+        WebApplicationFactory<Program> factory, string tournamentId, TimeSpan? deadlineOverride = null)
+    {
+        var deadline = DateTime.UtcNow + (deadlineOverride ?? ReceiveDeadline);
+        while (DateTime.UtcNow < deadline)
+        {
+            var tournament = await GetTournamentAsync(factory, tournamentId);
+            if (tournament.GetProperty("status").GetString() != "running")
+            {
+                return tournament;
+            }
+
+            await Task.Delay(25);
+        }
+
+        throw new TimeoutException(
+            $"Tournament {tournamentId} still running after {deadlineOverride ?? ReceiveDeadline}.");
     }
 
     /// <summary>

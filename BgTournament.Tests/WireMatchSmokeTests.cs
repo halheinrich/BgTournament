@@ -23,18 +23,13 @@ public class WireMatchSmokeTests
 {
     private static readonly TimeSpan SmokeDeadline = TimeSpan.FromSeconds(60);
 
-    /// <summary>The parity fixtures, consumed in place from the sibling checkout (never copied).</summary>
-    private static string ParityModelPath { get; } = Path.GetFullPath(Path.Combine(
-        AppContext.BaseDirectory, "..", "..", "..", "..", "..",
-        "BgRLEngine", "BgRLEngine", "parity", "model.onnx"));
-
     private sealed record MatchOutcome(
         string? Winner,
         int SeatOneScore,
         int SeatTwoScore,
         IReadOnlyList<(MatchSeat Winner, int Points, int TranscriptLength)> Games);
 
-    private static async Task<(System.Text.Json.JsonElement Summary, TournamentMatchRecord Record)> RunWireMatchAsync(
+    private static async Task<(System.Text.Json.JsonElement Summary, MatchRecord Record)> RunWireMatchAsync(
         Func<Microsoft.AspNetCore.Mvc.Testing.WebApplicationFactory<Program>, string, Task> connectEngineOne,
         Func<Microsoft.AspNetCore.Mvc.Testing.WebApplicationFactory<Program>, string, Task> connectEngineTwo,
         string nameOne,
@@ -56,7 +51,7 @@ public class WireMatchSmokeTests
         return (summary, record);
     }
 
-    private static MatchOutcome OutcomeOf(TournamentMatchRecord record)
+    private static MatchOutcome OutcomeOf(MatchRecord record)
     {
         Assert.NotNull(record.Result);
         return new MatchOutcome(
@@ -69,9 +64,9 @@ public class WireMatchSmokeTests
     }
 
     private static void AssertCompletedMatchInvariants(
-        TournamentMatchRecord record, string nameOne, string nameTwo, int matchLength)
+        MatchRecord record, string nameOne, string nameTwo, int matchLength)
     {
-        Assert.Equal(TournamentMatchStatus.Completed, record.Status);
+        Assert.Equal(MatchStatus.Completed, record.Status);
         Assert.NotNull(record.Result);
         var result = record.Result!;
 
@@ -94,7 +89,7 @@ public class WireMatchSmokeTests
             result.Games.Where(g => g.Winner == MatchSeat.Two).Sum(g => g.Result.Points));
     }
 
-    private static bool TranscriptContainsAHit(TournamentMatchRecord record) =>
+    private static bool TranscriptContainsAHit(MatchRecord record) =>
         record.Result!.Games
             .SelectMany(g => g.Transcript.Entries)
             .OfType<PlayTranscriptEntry>()
@@ -141,33 +136,13 @@ public class WireMatchSmokeTests
     public async Task SmokeB_BgInferenceEntersOverTheWire_LikeAnyThirdPartyEngine()
     {
         Assert.True(
-            File.Exists(ParityModelPath),
-            $"Parity model missing: '{ParityModelPath}'. The fixtures are committed in BgRLEngine " +
+            File.Exists(ServerHarness.ParityModelPath),
+            $"Parity model missing: '{ServerHarness.ParityModelPath}'. The fixtures are committed in BgRLEngine " +
             "(regenerate with 'python -m parity.generate_vectors'); check the sibling checkout.");
 
-        using var evaluator = OnnxEvaluator.Load(ParityModelPath);
+        using var evaluator = OnnxEvaluator.Load(ServerHarness.ParityModelPath);
         Func<Microsoft.AspNetCore.Mvc.Testing.WebApplicationFactory<Program>, string, Task> bgInference =
-            async (factory, name) =>
-            {
-                var socket = await factory.Server.CreateWebSocketClient()
-                    .ConnectAsync(new Uri("ws://localhost/engine"), CancellationToken.None);
-                var client = new EngineClient.EngineClient(
-                    new EngineIdentity(name, version: "parity-model"),
-                    new OnePlyPlayAgent(evaluator),
-                    new ThresholdCubeAgent(evaluator));
-                _ = Task.Run(async () =>
-                {
-                    try
-                    {
-                        await client.ServeAsync(socket);
-                    }
-                    catch (Exception ex) when (ex is OperationCanceledException
-                        or System.Net.WebSockets.WebSocketException or IOException)
-                    {
-                        // Test teardown.
-                    }
-                });
-            };
+            (factory, name) => ServerHarness.RunBgInferenceClientAsync(factory, name, evaluator);
 
         var (summary, record) = await RunWireMatchAsync(
             bgInference, RandomBot(7), "BgInferenceOnePly", "RandomBaseline", matchLength: 5, seed: 99);
