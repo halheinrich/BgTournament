@@ -260,7 +260,23 @@ Version 1 has no chess-style clocks. The only timing rules are the handshake
 timeout (§3) and the per-decision timeout (§8), both server-configured. Real
 time controls are planned for a future protocol version.
 
-## 10. Version history
+## 10. Deliberate version-1 gaps
+
+Recorded so they read as decisions, not oversights — candidates for future
+versions:
+
+- **No `aborted` reason.** A match stopped by the server itself (shutdown,
+  internal error) ends silently on the wire; `matchEnded` never lies about
+  the reason. Server-side records carry the truth.
+- **No per-game notifications.** Engines learn game boundaries implicitly
+  (a fresh opening position in the next query); only match start/end are
+  announced.
+- **Forfeit scores.** On a forfeit the reported points may be `0`–`0`: the
+  match is decided by the forfeit itself, and version-1 servers may not
+  retain mid-match scores (§8).
+- **No time controls** beyond the two timeouts (§9).
+
+## 11. Version history
 
 - **1** — initial protocol: handshake, three decision queries, match
   lifecycle notifications, forfeit semantics.

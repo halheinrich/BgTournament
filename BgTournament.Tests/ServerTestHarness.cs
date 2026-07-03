@@ -97,9 +97,9 @@ internal static class ServerHarness
 
     /// <summary>Poll the match record until it leaves <c>running</c>.</summary>
     public static async Task<JsonElement> WaitForMatchEndAsync(
-        WebApplicationFactory<Program> factory, string matchId)
+        WebApplicationFactory<Program> factory, string matchId, TimeSpan? deadlineOverride = null)
     {
-        var deadline = DateTime.UtcNow + ReceiveDeadline;
+        var deadline = DateTime.UtcNow + (deadlineOverride ?? ReceiveDeadline);
         while (DateTime.UtcNow < deadline)
         {
             var match = await GetMatchAsync(factory, matchId);
