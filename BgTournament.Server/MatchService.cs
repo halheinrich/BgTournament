@@ -24,6 +24,12 @@ internal sealed class MatchRecord
     /// <summary>The dice seed. Recorded even when server-chosen, so any match can be re-rolled.</summary>
     public required int Seed { get; init; }
 
+    /// <summary>
+    /// Monotonic creation order, for stable listings — a concurrent
+    /// dictionary has none of its own. Server-internal; never serialized.
+    /// </summary>
+    public required long Sequence { get; init; }
+
     public MatchStatus Status { get; set; } = MatchStatus.Running;
 
     /// <summary>Winning engine's name; null while running or when there is no winner.</summary>
@@ -96,6 +102,7 @@ internal sealed class MatchService
     private readonly ILogger<MatchService> _logger;
     private readonly CancellationToken _serverStopping;
     private readonly ConcurrentDictionary<string, MatchRecord> _records = new();
+    private long _sequenceSource;
 
     public MatchService(
         EngineRegistry registry,
@@ -112,6 +119,10 @@ internal sealed class MatchService
     /// <summary>Fetch a match record by id.</summary>
     public bool TryGetRecord(string matchId, out MatchRecord record) =>
         _records.TryGetValue(matchId, out record!);
+
+    /// <summary>All match records in creation order — the stable listing.</summary>
+    public IReadOnlyList<MatchRecord> ListRecords() =>
+        _records.Values.OrderBy(record => record.Sequence).ToArray();
 
     /// <summary>
     /// Validate, claim both engines, and start the match in the background.
@@ -196,6 +207,7 @@ internal sealed class MatchService
             MatchLength = matchLength,
             MaxGames = maxGames,
             Seed = seed,
+            Sequence = Interlocked.Increment(ref _sequenceSource),
         };
         _records[record.MatchId] = record;
         return record;

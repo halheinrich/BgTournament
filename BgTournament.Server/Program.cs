@@ -34,6 +34,9 @@ app.MapPost("/matches", (StartMatchRequest request, MatchService matches) =>
     };
 });
 
+app.MapGet("/matches", (MatchService matches) =>
+    Results.Ok(matches.ListRecords().Select(ApiMapping.ToSummary)));
+
 app.MapGet("/matches/{matchId}", (string matchId, MatchService matches) =>
     matches.TryGetRecord(matchId, out var record)
         ? Results.Ok(record.ToSummary())
@@ -53,6 +56,9 @@ app.MapPost("/tournaments", (StartTournamentRequest request, TournamentService t
         _ => Results.BadRequest(new ErrorResponse(detail!)),
     };
 });
+
+app.MapGet("/tournaments", (TournamentService tournaments) =>
+    Results.Ok(tournaments.ListRecords().Select(tournaments.Summarize)));
 
 app.MapGet("/tournaments/{tournamentId}", (string tournamentId, TournamentService tournaments) =>
     tournaments.TryGetSummary(tournamentId, out var summary)

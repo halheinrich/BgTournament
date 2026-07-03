@@ -29,14 +29,21 @@ internal enum StartTournamentError
 /// </summary>
 internal sealed class TournamentRecord
 {
-    public TournamentRecord(string tournamentId, Tournament tournament)
+    public TournamentRecord(string tournamentId, Tournament tournament, long sequence)
     {
         TournamentId = tournamentId;
         Tournament = tournament;
+        Sequence = sequence;
         MatchIds = new string?[tournament.Schedule.Count];
     }
 
     public string TournamentId { get; }
+
+    /// <summary>
+    /// Monotonic creation order, for stable listings — a concurrent
+    /// dictionary has none of its own. Server-internal; never serialized.
+    /// </summary>
+    public long Sequence { get; }
 
     /// <summary>
     /// The domain aggregate (schedule, results, standings). Not thread-safe —
@@ -75,6 +82,7 @@ internal sealed class TournamentService
     private readonly ILogger<TournamentService> _logger;
     private readonly CancellationToken _serverStopping;
     private readonly ConcurrentDictionary<string, TournamentRecord> _records = new();
+    private long _sequenceSource;
 
     public TournamentService(
         EngineRegistry registry,
@@ -142,12 +150,17 @@ internal sealed class TournamentService
             }
         }
 
-        var record = new TournamentRecord(Guid.NewGuid().ToString("N"), tournament);
+        var record = new TournamentRecord(
+            Guid.NewGuid().ToString("N"), tournament, Interlocked.Increment(ref _sequenceSource));
         _records[record.TournamentId] = record;
 
         _ = Task.Run(() => RunTournamentAsync(record, sessions), CancellationToken.None);
         return (record, StartTournamentError.None, null);
     }
+
+    /// <summary>All tournament records in creation order — the stable listing.</summary>
+    public IReadOnlyList<TournamentRecord> ListRecords() =>
+        _records.Values.OrderBy(record => record.Sequence).ToArray();
 
     /// <summary>Project a tournament by id onto its admin summary.</summary>
     public bool TryGetSummary(string tournamentId, out TournamentSummary summary)
