@@ -1,0 +1,6 @@
+<Solution>
+  <Project Path="BgTournament.EngineClient/BgTournament.EngineClient.csproj" />
+  <Project Path="BgTournament.Protocol/BgTournament.Protocol.csproj" />
+  <Project Path="BgTournament.Server/BgTournament.Server.csproj" />
+  <Project Path="BgTournament.Tests/BgTournament.Tests.csproj" />
+</Solution>

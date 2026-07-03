@@ -1,0 +1,18 @@
+## Build output
+bin/
+obj/
+
+## Visual Studio
+.vs/
+*.user
+*.suo
+
+## NuGet
+*.nupkg
+
+## OS
+Thumbs.db
+Desktop.ini
+
+## Claude Code per-session working area
+.claude/
