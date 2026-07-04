@@ -142,4 +142,64 @@ public class ApiGoldenTests
                     new TournamentMatchEntry(0, "Alpha", "Beta", 1234, "match-1", MatchStatus.Completed, "Alpha"),
                 ]),
             """{"tournamentId":"tournament-1","participants":["Alpha","Beta"],"matchLength":1,"matchesPerPairing":1,"seed":7,"status":"completed","winner":"Alpha","detail":null,"standings":[{"rank":1,"participant":"Alpha","wins":1,"losses":0,"sonnebornBerger":0},{"rank":2,"participant":"Beta","wins":0,"losses":1,"sonnebornBerger":0}],"matches":[{"index":0,"seatOne":"Alpha","seatTwo":"Beta","seed":1234,"matchId":"match-1","status":"completed","winner":"Alpha"}]}""");
+
+    [Theory]
+    [InlineData(Seat.One, "seatOne")]
+    [InlineData(Seat.Two, "seatTwo")]
+    public void Seat_EveryMember(Seat seat, string wire) =>
+        AssertGolden(seat, $"\"{wire}\"");
+
+    [Theory]
+    [InlineData(CubeOwner.Centered, "centered")]
+    [InlineData(CubeOwner.SeatOne, "seatOne")]
+    [InlineData(CubeOwner.SeatTwo, "seatTwo")]
+    public void CubeOwner_EveryMember(CubeOwner owner, string wire) =>
+        AssertGolden(owner, $"\"{wire}\"");
+
+    [Theory]
+    [InlineData(GameResultKind.Single, "single")]
+    [InlineData(GameResultKind.Gammon, "gammon")]
+    [InlineData(GameResultKind.Backgammon, "backgammon")]
+    public void GameResultKind_EveryMember(GameResultKind kind, string wire) =>
+        AssertGolden(kind, $"\"{wire}\"");
+
+    [Theory]
+    [InlineData(CubeResponseAction.Take, "take")]
+    [InlineData(CubeResponseAction.Pass, "pass")]
+    public void CubeResponseAction_EveryMember(CubeResponseAction action, string wire) =>
+        AssertGolden(action, $"\"{wire}\"");
+
+    /// <summary>The standard opening position in seat One's frame.</summary>
+    private static GamePosition OpeningPosition(int cubeValue = 1, CubeOwner cubeOwner = CubeOwner.Centered) => new(
+        new[] { 0, -2, 0, 0, 0, 0, 5, 0, 3, 0, 0, 0, -5, 5, 0, 0, 0, -3, 0, -5, 0, 0, 0, 0, 2, 0 },
+        cubeValue,
+        cubeOwner);
+
+    /// <summary>
+    /// The whole replay shape in one pin: all three entry kinds under their
+    /// "type" discriminators, the seat-keyed cube owner, and the game-level
+    /// outcome + finalState. Inherited members (actor, state) serialize after
+    /// a derived record's own — pinned here so it never drifts silently.
+    /// </summary>
+    [Fact]
+    public void MatchGamesResponse_Golden() =>
+        AssertGolden(
+            new MatchGamesResponse(
+                "match-1", "Alpha", "Beta", MatchLength: 3,
+                Games:
+                [
+                    new GameReplay(
+                        GameNumber: 1, Seat.Two, GameResultKind.Single, CubeValue: 2, Points: 2,
+                        SeatOneScore: 0, SeatTwoScore: 0, IsCrawford: false,
+                        Entries:
+                        [
+                            new PlayEntry(
+                                Seat.One, OpeningPosition(), Die1: 3, Die2: 1,
+                                Moves: [new PlayMove(8, 5), new PlayMove(6, 5)]),
+                            new CubeOfferEntry(Seat.Two, OpeningPosition()),
+                            new CubeResponseEntry(Seat.One, OpeningPosition(), CubeResponseAction.Take),
+                        ],
+                        FinalState: OpeningPosition(cubeValue: 2, cubeOwner: CubeOwner.SeatOne)),
+                ]),
+            """{"matchId":"match-1","engineOne":"Alpha","engineTwo":"Beta","matchLength":3,"games":[{"gameNumber":1,"winner":"seatTwo","resultKind":"single","cubeValue":2,"points":2,"seatOneScore":0,"seatTwoScore":0,"isCrawford":false,"entries":[{"type":"play","die1":3,"die2":1,"moves":[{"from":8,"to":5},{"from":6,"to":5}],"actor":"seatOne","state":{"board":[0,-2,0,0,0,0,5,0,3,0,0,0,-5,5,0,0,0,-3,0,-5,0,0,0,0,2,0],"cubeValue":1,"cubeOwner":"centered"}},{"type":"cubeOffer","actor":"seatTwo","state":{"board":[0,-2,0,0,0,0,5,0,3,0,0,0,-5,5,0,0,0,-3,0,-5,0,0,0,0,2,0],"cubeValue":1,"cubeOwner":"centered"}},{"type":"cubeResponse","action":"take","actor":"seatOne","state":{"board":[0,-2,0,0,0,0,5,0,3,0,0,0,-5,5,0,0,0,-3,0,-5,0,0,0,0,2,0],"cubeValue":1,"cubeOwner":"centered"}}],"finalState":{"board":[0,-2,0,0,0,0,5,0,3,0,0,0,-5,5,0,0,0,-3,0,-5,0,0,0,0,2,0],"cubeValue":2,"cubeOwner":"seatOne"}}]}""");
 }

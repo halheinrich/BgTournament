@@ -42,6 +42,28 @@ app.MapGet("/matches/{matchId}", (string matchId, MatchService matches) =>
         ? Results.Ok(record.ToSummary())
         : Results.NotFound());
 
+// Replay: a completed match's per-game transcripts, every position
+// re-expressed in seat One's frame so viewers keep a stable orientation.
+app.MapGet("/matches/{matchId}/games", (string matchId, MatchService matches) =>
+{
+    if (!matches.TryGetRecord(matchId, out var record))
+    {
+        return Results.NotFound();
+    }
+
+    // Completed matches only: a running match has no settled transcripts
+    // yet, and forfeited/aborted/faulted matches retain none (v1 gap — the
+    // runner's throw discards them).
+    return record.Status switch
+    {
+        MatchStatus.Completed => Results.Ok(record.ToGamesResponse()),
+        MatchStatus.Running => Results.Conflict(new ErrorResponse(
+            $"Match '{matchId}' is still running; its games are served once it completes.")),
+        _ => Results.Conflict(new ErrorResponse(
+            $"Match '{matchId}' did not complete ({record.Status}); only completed matches retain transcripts.")),
+    };
+});
+
 // Round-robin tournaments: server-side orchestration over the same match
 // host — invisible on the wire (engines just see per-match lifecycles).
 app.MapPost("/tournaments", (StartTournamentRequest request, TournamentService tournaments) =>

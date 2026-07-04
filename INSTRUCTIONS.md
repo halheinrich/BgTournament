@@ -56,13 +56,24 @@ BgTournament/
 │   ├── WireProtocol.cs                 Version const + the ONLY (de)serialization path
 │   ├── WireMapping.cs                  the ONLY wire ↔ substrate field correspondences
 │   └── ProtocolSocket.cs               framing rule (1 text frame = 1 message, 64 KiB)
+├── BgTournament.Api/                   admin HTTP contracts (zero dependencies, public)
+│   ├── MatchStatus.cs / TournamentStatus.cs    status vocabularies (Server uses them too)
+│   ├── ErrorResponse.cs                the typed error body on every non-success response
+│   ├── StartMatchRequest.cs / StartTournamentRequest.cs
+│   ├── EngineSummary.cs / MatchSummary.cs
+│   ├── StandingEntry.cs / TournamentMatchEntry.cs / TournamentSummary.cs
+│   ├── Seat.cs / CubeOwner.cs          seat-keyed identities for replay shapes
+│   ├── GameResultKind.cs / CubeResponseAction.cs
+│   ├── GamePosition.cs / PlayMove.cs   seat-One-frame position; mover-relative move
+│   ├── GameEntry.cs                    "type"-discriminated union: play/cubeOffer/cubeResponse
+│   └── GameReplay.cs / MatchGamesResponse.cs   per-game replay + the endpoint envelope
 ├── BgTournament.Core/                  execution-blind tournament domain (zero dependencies)
 │   ├── TournamentFormat.cs             round-robin config: matchLength × matchesPerPairing
 │   ├── ScheduledMatch.cs               one schedule row: seats + the derived dice seed
 │   ├── StandingsRow.cs                 one standings line: wins, losses, Sonneborn-Berger
 │   └── Tournament.cs                   the aggregate: schedule, results, tie-break ladder
 ├── BgTournament.Server/                the tournament host (all types internal)
-│   ├── Program.cs                      /engine (WS), /engines, /matches endpoints
+│   ├── Program.cs                      /engine (WS) + the admin HTTP endpoints
 │   ├── EngineSocketEndpoint.cs         handshake gate; named rejections
 │   ├── EngineConnection.cs             receive loop; one in-flight query; Closed task
 │   ├── IEngineChannel.cs               query seam (EngineConnection live, faked in tests)
@@ -73,7 +84,8 @@ BgTournament/
 │   ├── TournamentService.cs            tournament host: claims, orchestration, folding
 │   ├── EngineFailureExceptions.cs      timeout / disconnected / protocol-violation
 │   ├── TournamentOptions.cs            decision + handshake timeouts (appsettings)
-│   └── ApiContracts.cs                 admin HTTP shapes (not the wire protocol)
+│   ├── ApiMapping.cs                   the ONLY server-internal → Api projections
+│   └── ReplayProjection.cs             transcript → replay contract: frame walk + flip
 ├── BgTournament.EngineClient/          .NET SDK + reference bot
 │   ├── EngineClient.cs                 connect/handshake/serve loop over local agents
 │   ├── EngineIdentity.cs               hello identity
@@ -82,6 +94,7 @@ BgTournament/
 │   └── PassiveCubeAgent.cs             reference cube policy (never double, always take)
 └── BgTournament.Tests/
     ├── GoldenWireTests.cs              byte-for-byte wire pins, every message
+    ├── ApiGoldenTests.cs               byte-for-byte admin JSON pins, every shape + enum
     ├── ProtocolRoundTripTests.cs       strictness + tolerance edges
     ├── ProtocolDocTests.cs             PROTOCOL.md examples stay canonical wire text
     ├── WireMappingTests.cs             field preservation + the no-double-flip pin
@@ -91,6 +104,9 @@ BgTournament/
     ├── ServerTestHarness.cs            TestEngine (raw-wire scripting) + helpers
     ├── ServerIntegrationTests.cs       handshake gate + taxonomy over TestServer
     ├── WireMatchSmokeTests.cs          full wire matches: random pair + BgInference
+    ├── ListEndpointTests.cs            /matches + /tournaments listings, creation order
+    ├── ReplayProjectionTests.cs        the frame walk on scripted-dice MatchRunner runs
+    ├── ReplayEndpointTests.cs          /matches/{id}/games over TestServer, 404/409
     ├── TournamentCoreTests.cs          domain pins: schedule, seeds, tie-break ladder
     ├── TournamentServerTests.cs        tournament claims, validation, forfeit folding
     └── TournamentSmokeTests.cs         3-engine round-robin over the wire to a winner
@@ -178,6 +194,41 @@ without play (no wire traffic — no `matchStarted` was ever sent). A match
 that ends with no winner to fold (Aborted/Faulted) halts the tournament with
 that status. Tournaments are invisible on the wire: engines see only the
 usual per-match lifecycle, and PROTOCOL.md stays at v1.
+
+**Admin API shape.** `BgTournament.Api` is the second public contract (the
+first is the wire): a zero-dependency assembly holding every shape that
+crosses the admin HTTP boundary, referenced by the Server and by consumers
+(BgArena_Blazor). The contracts are self-describing — every enum pins its
+wire string per member (`JsonStringEnumMemberName`), so hosts and consumers
+serialize with plain Web defaults and zero converter configuration.
+`MatchStatus`/`TournamentStatus` are simultaneously the server's internal
+state and the public vocabulary — one enum, so an internal status refactor is
+visibly a contract change. Server-side, `ApiMapping` is the only home of
+server-internal → Api projections (the admin counterpart of `WireMapping`),
+and `ApiGoldenTests` pins every shape's exact JSON the way the wire goldens
+pin the protocol. Listings (`GET /matches`, `GET /tournaments`) serve
+creation order via a never-serialized monotonic `Sequence` on each record —
+the concurrent dictionaries have no order of their own.
+
+**Replay shape.** `GET /matches/{matchId}/games` projects a Completed match's
+retained transcripts onto the replay contract (`ReplayProjection`). The
+substrate records each decision in the on-roll player's frame with no seat
+identity, so the projection does two host-side jobs. (1) *The frame walk*:
+seat attribution is re-derived from the runner's documented sequencing — a
+game's first entry is the opening play whose higher die names the winner
+(`Die1` is seat One's), every play entry flips the on-roll seat, cube entries
+don't (both the offer and the response snapshot the live state in the
+offerer's frame; the response's actor is the other seat). (2) *Frame
+normalization*: every position is re-expressed in seat One's frame before it
+crosses the API — viewers anchor each engine to one side of the board and
+never learn the frame rule; the flip round-trips through the substrate's own
+`GameState.OpponentView` (the system's single re-expression), never a local
+mirror. Play moves stay mover-relative on purpose — that is the frame
+standard backgammon notation uses — and a viewer steps through served
+positions rather than applying moves. The terminal transcript event is not an
+entry: outcome lives at game level and the last position becomes
+`finalState`. Non-Completed matches answer 409 (running: not yet;
+forfeited/aborted/faulted: no transcripts retained — the v1 gap).
 
 **Client shape.** `EngineClient.ServeAsync(WebSocket)` is the transport seam
 (any socket source, in-proc test servers included); `RunAsync(Uri)` wraps it
@@ -269,12 +320,51 @@ public sealed class Tournament
     public IReadOnlyList<StandingsRow> ComputeStandings();  // wins → head-to-head → Sonneborn-Berger → seeding
 }
 
+// BgTournament.Api — the admin HTTP contract: zero dependencies, pure shapes.
+// Every request/response the admin surface speaks, one record per shape,
+// string enums pinned per member — consumers deserialize with Web defaults.
+public sealed record ErrorResponse(string Error);          // the body of every non-success response
+public sealed record StartMatchRequest(...);               // POST /matches
+public sealed record StartTournamentRequest(...);          // POST /tournaments
+public sealed record EngineSummary(...);                   // GET /engines rows
+public sealed record MatchSummary(...);                    // match endpoints' projection
+public sealed record TournamentSummary(...);               // tournament endpoints' projection
+public sealed record StandingEntry(...);                   //   one standings line
+public sealed record TournamentMatchEntry(...);            //   one schedule-ledger row
+public enum MatchStatus { Running, Completed, Forfeited, Aborted, Faulted }
+public enum TournamentStatus { Running, Completed, Aborted, Faulted }
+
+// Replay (GET /matches/{matchId}/games) — positions are absolute:
+public enum Seat { One, Two }                               // "seatOne"/"seatTwo"; One = engineOne
+public enum CubeOwner { Centered, SeatOne, SeatTwo }
+public enum GameResultKind { Single, Gammon, Backgammon }
+public enum CubeResponseAction { Take, Pass }
+public sealed record MatchGamesResponse(                    // the endpoint envelope
+    string MatchId, string EngineOne, string EngineTwo, int MatchLength,
+    IReadOnlyList<GameReplay> Games);
+public sealed record GameReplay(                            // one game, replay-ready
+    int GameNumber, Seat Winner, GameResultKind ResultKind, int CubeValue, int Points,
+    int SeatOneScore, int SeatTwoScore, bool IsCrawford,    // scores entering the game
+    IReadOnlyList<GameEntry> Entries, GamePosition FinalState);
+public abstract record GameEntry(Seat Actor, GamePosition State);  // "type"-discriminated:
+public sealed record PlayEntry(..., int Die1, int Die2, IReadOnlyList<PlayMove> Moves);  // "play"
+public sealed record CubeOfferEntry(...);                                                // "cubeOffer"
+public sealed record CubeResponseEntry(..., CubeResponseAction Action);                  // "cubeResponse"
+public sealed record GamePosition(IReadOnlyList<int> Board, int CubeValue, CubeOwner CubeOwner);
+    // Board: 26-element Mop array in seat One's frame (positive = seat One,
+    // [25] = seat One's bar, [0] = seat Two's bar) — stable orientation.
+public sealed record PlayMove(int From, int To);            // actor's own numbering (notation frame)
+
 // BgTournament.Server — an application, not a library: all types internal.
-// Its API is the wire protocol (PROTOCOL.md) plus the admin HTTP surface:
+// Its API is the wire protocol (PROTOCOL.md) plus the admin HTTP surface
+// (shapes: BgTournament.Api; errors carry ErrorResponse):
 //   GET  /engines                          connected engines (name, version, author, inMatch)
 //   POST /matches                          {engineOne, engineTwo, matchLength, seed?, maxGames?}
+//   GET  /matches                          every match record, creation order
 //   GET  /matches/{matchId}                record summary (status, winner, scores, forfeit info)
+//   GET  /matches/{matchId}/games          Completed match's replay (409 otherwise)
 //   POST /tournaments                      {participants[], matchLength, matchesPerPairing, seed?}
+//   GET  /tournaments                      every tournament record, creation order
 //   GET  /tournaments/{tournamentId}       status, standings, winner, per-match ledger (ids
 //                                          resolve on GET /matches/{matchId})
 // Config: Tournament:DecisionTimeoutSeconds (default 30), Tournament:HandshakeTimeoutSeconds (10).
@@ -335,6 +425,20 @@ public sealed class Tournament
   disconnects — or is kicked by a forfeit close — forfeits its remaining
   matches without play, even if it reconnects under the same name. Both sides
   gone halts the tournament as Faulted (a match can be forfeited to no one).
+- **The frame walk re-derives runner sequencing — don't "fix" it locally.**
+  `ReplayProjection` knows that a game's first transcript entry is the
+  opening play (Die1 = seat One's die, higher wins), that each play entry
+  flips the on-roll seat, and that *both* cube entries of an offer/response
+  pair are recorded in the offerer's frame. Those facts are the substrate's;
+  if a `MatchRunner` transcript change breaks the walk, the fix is to
+  re-align with (or better, land seat identity in) the substrate — booked
+  umbrella-side — never to patch attribution heuristics here. The flip
+  itself must stay a `GameState.OpponentView` round-trip: a local mirror
+  would be the system's second re-expression.
+- **The admin JSON is pinned byte-for-byte, wire-style.** `ApiGoldenTests`
+  is the alarm: a shape or enum-string drift in `BgTournament.Api` is a
+  contract change for BgArena_Blazor. Note the Web-default encoder escapes
+  apostrophes (`'` → `\u0027`) in detail strings — pinned deliberately.
 
 ## Subproject-internal next steps
 
@@ -351,4 +455,12 @@ public sealed class Tournament
 - **Tournament rejoin policy** — v1 binds the sessions present at start;
   re-resolving a participant by name at each scheduled match (so a
   reconnected engine plays on) is a candidate once real remote engines flake.
-- **`GET /tournaments` list endpoint** — lookup is by id only today.
+- **Record timestamps** — match/tournament records carry creation order
+  (internal `Sequence`) but no wall-clock times; a dashboard "when" column
+  wants `startedAtUtc`/`endedAtUtc` on the summaries.
+- **Disconnect-during-`matchStarted` forfeit gap** — an engine that vanishes
+  in the narrow window while `matchStarted` is being sent can surface as a
+  Faulted match rather than a Forfeited one (seen once as test flake; the
+  send failure appears to bypass the disconnect translation). Deterministic
+  repro + taxonomy fix wanted; execution semantics were out of scope for the
+  read-surface arc.
