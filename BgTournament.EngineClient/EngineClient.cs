@@ -27,14 +27,28 @@ public sealed class EngineClient
     private readonly IPlayAgent _playAgent;
     private readonly ICubeAgent _cubeAgent;
     private readonly ILogger<EngineClient>? _logger;
+    private readonly Action<DiceVerificationReport>? _onDiceVerified;
 
     /// <summary>Create a client serving queries from the given local agents.</summary>
+    /// <param name="identity">The engine's handshake identity.</param>
+    /// <param name="playAgent">The local play policy.</param>
+    /// <param name="cubeAgent">The local cube policy.</param>
+    /// <param name="logger">Optional logger.</param>
+    /// <param name="onDiceVerified">
+    /// Optional fair-dice hook: after each fair-mode match ends, the client
+    /// verifies the revealed key against the commitment and the rolls it observed
+    /// (see <see cref="DiceVerification"/>) and delivers the report here. Pass
+    /// nothing to opt out. Never invoked for explicit-seed matches (no commitment),
+    /// and a failed verification is <em>reported</em>, not thrown — the policy on a
+    /// cheating server belongs to the consumer, not the serve loop.
+    /// </param>
     /// <exception cref="ArgumentNullException">A required argument is null.</exception>
     public EngineClient(
         EngineIdentity identity,
         IPlayAgent playAgent,
         ICubeAgent cubeAgent,
-        ILogger<EngineClient>? logger = null)
+        ILogger<EngineClient>? logger = null,
+        Action<DiceVerificationReport>? onDiceVerified = null)
     {
         ArgumentNullException.ThrowIfNull(identity);
         ArgumentNullException.ThrowIfNull(playAgent);
@@ -43,6 +57,7 @@ public sealed class EngineClient
         _playAgent = playAgent;
         _cubeAgent = cubeAgent;
         _logger = logger;
+        _onDiceVerified = onDiceVerified;
     }
 
     /// <summary>
@@ -103,6 +118,10 @@ public sealed class EngineClient
                     $"Expected welcome or rejected, got {first.GetType().Name}.");
         }
 
+        // Accumulates each fair-mode match's dice observations for verification at
+        // match end; harmlessly inert when no fair-dice hook is wired.
+        var diceAudit = new DiceAuditRecorder();
+
         while (true)
         {
             var message = await channel.ReceiveAsync(cancellationToken).ConfigureAwait(false);
@@ -116,6 +135,7 @@ public sealed class EngineClient
             {
                 case PlayQueryMessage query:
                 {
+                    diceAudit.OnPlayQuery(query);
                     var play = await _playAgent
                         .ChoosePlayAsync(query.State.ToGameState(), query.Die1, query.Die2, cancellationToken)
                         .ConfigureAwait(false);
@@ -168,6 +188,7 @@ public sealed class EngineClient
                 }
 
                 case MatchStartedMessage started:
+                    diceAudit.OnMatchStarted(started);
                     _logger?.LogInformation(
                         "Engine {EngineName}: match {MatchId} started against {Opponent} (length {MatchLength}).",
                         _identity.Name, started.MatchId, started.Opponent, started.MatchLength);
@@ -177,12 +198,40 @@ public sealed class EngineClient
                     _logger?.LogInformation(
                         "Engine {EngineName}: match {MatchId} ended ({Reason}) {YourPoints}–{OpponentPoints}.",
                         _identity.Name, ended.MatchId, ended.Reason, ended.YourPoints, ended.OpponentPoints);
+                    DeliverDiceReport(diceAudit.OnMatchEnded(ended));
                     break;
 
                 default:
                     throw new ProtocolViolationException(
                         $"Unexpected message from server: {message.GetType().Name}.");
             }
+        }
+    }
+
+    // Deliver a fair-dice verification report to the consumer's hook. The
+    // callback is guarded: a throwing (or slow) consumer must not drop an
+    // otherwise-healthy engine session over an observational audit.
+    private void DeliverDiceReport(DiceVerificationReport? report)
+    {
+        if (report is null || _onDiceVerified is null)
+        {
+            return;
+        }
+
+        if (!report.Verified)
+        {
+            _logger?.LogWarning(
+                "Engine {EngineName}: dice verification did not pass ({Outcome}): {Detail}",
+                _identity.Name, report.Outcome, report.Detail);
+        }
+
+        try
+        {
+            _onDiceVerified(report);
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogError(ex, "Engine {EngineName}: the dice-verification hook threw; ignoring.", _identity.Name);
         }
     }
 }

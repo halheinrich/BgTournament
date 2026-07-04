@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using BgGame_Lib;
 using BgTournament.Api;
 using BgTournament.Core;
 using Microsoft.Extensions.Hosting;
@@ -29,15 +30,26 @@ internal enum StartTournamentError
 /// </summary>
 internal sealed class TournamentRecord
 {
-    public TournamentRecord(string tournamentId, Tournament tournament, long sequence)
+    public TournamentRecord(string tournamentId, Tournament tournament, long sequence, bool fairDice)
     {
         TournamentId = tournamentId;
         Tournament = tournament;
         Sequence = sequence;
+        FairDice = fairDice;
         MatchIds = new string?[tournament.Schedule.Count];
     }
 
     public string TournamentId { get; }
+
+    /// <summary>
+    /// Whether the tournament's matches run on fair-mode (committed, verifiable)
+    /// dice — true when no explicit tournament seed was given. Independent of the
+    /// <see cref="Tournament"/> seed: that seed governs schedule <em>structure</em>
+    /// (pairings, seat alternation, per-match seeds) in every mode; it only drives
+    /// the <em>dice</em> in explicit-seed mode. In fair mode each hosted match gets
+    /// its own freshly generated key, so the scheduled seeds are structural, not dead.
+    /// </summary>
+    public bool FairDice { get; }
 
     /// <summary>
     /// Monotonic creation order, for stable listings — a concurrent
@@ -150,8 +162,11 @@ internal sealed class TournamentService
             }
         }
 
+        // No explicit seed ⇒ fair mode: each match runs on its own committed key.
+        // An explicit seed keeps the reproducible SeededDiceSource (dev/repro).
         var record = new TournamentRecord(
-            Guid.NewGuid().ToString("N"), tournament, Interlocked.Increment(ref _sequenceSource));
+            Guid.NewGuid().ToString("N"), tournament, Interlocked.Increment(ref _sequenceSource),
+            fairDice: seed is null);
         _records[record.TournamentId] = record;
 
         _ = Task.Run(() => RunTournamentAsync(record, sessions), CancellationToken.None);
@@ -247,8 +262,11 @@ internal sealed class TournamentService
                     return;
                 }
 
+                // Fair mode: a fresh committed key per match (the scheduled seed
+                // stays structural). Seeded mode: the scheduled seed drives the dice.
                 var match = _matches.CreateHostedMatch(
-                    scheduled.SeatOne, scheduled.SeatTwo, tournament.Format.MatchLength, scheduled.Seed);
+                    scheduled.SeatOne, scheduled.SeatTwo, tournament.Format.MatchLength, scheduled.Seed,
+                    diceKey: record.FairDice ? DiceKey.Generate() : null);
                 if (!oneConnected || !twoConnected)
                 {
                     // Forfeit without play: no matchStarted was ever sent, so

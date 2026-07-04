@@ -185,6 +185,67 @@ public class GoldenWireTests
             """{"type":"matchStarted","matchId":"m-2","opponent":"RandomBot","matchLength":0,"maxGames":50}""");
     }
 
+    /// <summary>
+    /// Fair mode: matchStarted publishes the pre-match commitment and the
+    /// algorithm id. The commitment is the real SHA-256(zero-key ‖
+    /// "bg-tournament:match:m-1") — the value PROTOCOL.md's fair-dice section
+    /// pins — and the algorithm id comes from the single-sourced constant.
+    /// </summary>
+    [Fact]
+    public void MatchStarted_FairDice_CarriesCommitmentAndAlgorithm()
+    {
+        var message = new MatchStartedMessage
+        {
+            MatchId = "m-1",
+            Opponent = "RandomBot",
+            MatchLength = 7,
+            DiceCommitment = "adc77c694eef819749968e4d9c7e479af9afecd7db819bab37d5bcdb7b34554e",
+            DiceAlgorithm = VerifiableDice.AlgorithmId,
+        };
+        AssertGolden(
+            message,
+            """{"type":"matchStarted","matchId":"m-1","opponent":"RandomBot","matchLength":7,"diceCommitment":"adc77c694eef819749968e4d9c7e479af9afecd7db819bab37d5bcdb7b34554e","diceAlgorithm":"hmac-sha256-dice-v1"}""");
+    }
+
+    /// <summary>Fair mode: matchEnded reveals the dice key (the all-zero key here).</summary>
+    [Fact]
+    public void MatchEnded_FairDice_RevealsKey()
+    {
+        var message = new MatchEndedMessage
+        {
+            MatchId = "m-1",
+            Reason = MatchEndReason.MatchComplete,
+            YourPoints = 7,
+            OpponentPoints = 4,
+            YouWon = true,
+            DiceKey = "0000000000000000000000000000000000000000000000000000000000000000",
+        };
+        AssertGolden(
+            message,
+            """{"type":"matchEnded","matchId":"m-1","reason":"matchComplete","yourPoints":7,"opponentPoints":4,"youWon":true,"diceKey":"0000000000000000000000000000000000000000000000000000000000000000"}""");
+    }
+
+    /// <summary>
+    /// Fair mode: playQuery carries the roll's stream index. This is the
+    /// worked example from PROTOCOL.md — the all-zero key's index-1 roll (1,5),
+    /// seat Two's opening after the index-0 tie (4,4) was re-rolled.
+    /// </summary>
+    [Fact]
+    public void PlayQuery_FairDice_CarriesRollIndex()
+    {
+        var message = new PlayQueryMessage
+        {
+            RequestId = "q-1",
+            State = OpeningState(matchLength: 7, yourScore: 0, opponentScore: 0),
+            Die1 = 1,
+            Die2 = 5,
+            RollIndex = 1,
+        };
+        AssertGolden(
+            message,
+            """{"type":"playQuery","requestId":"q-1","state":{"board":[0,-2,0,0,0,0,5,0,3,0,0,0,-5,5,0,0,0,-3,0,-5,0,0,0,0,2,0],"cubeValue":1,"cubeOwner":"centered","matchLength":7,"yourScore":0,"opponentScore":0,"isCrawford":false},"die1":1,"die2":5,"rollIndex":1}""");
+    }
+
     [Fact]
     public void MatchEnded_MatchComplete()
     {

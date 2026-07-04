@@ -30,4 +30,14 @@ public sealed record MatchEndedMessage : ProtocolMessage
 
     /// <summary>Optional human-readable detail (e.g. the nature of a forfeit).</summary>
     public string? Detail { get; init; }
+
+    /// <summary>
+    /// Fair-mode only: the revealed dice key, as a lowercase-hex 256-bit value
+    /// (see PROTOCOL.md, "Provably-fair dice"). Present iff this match was
+    /// driven by verifiable dice (its <see cref="MatchStartedMessage"/> carried a
+    /// <see cref="MatchStartedMessage.DiceCommitment"/>). With it, either party
+    /// re-derives every roll and confirms the dice matched the pre-match
+    /// commitment and never adapted mid-match. Omitted for explicit-seed matches.
+    /// </summary>
+    public string? DiceKey { get; init; }
 }

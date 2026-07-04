@@ -60,6 +60,39 @@ internal static class ServerHarness
     }
 
     /// <summary>
+    /// Connect a real EngineClient (random play, passive cube) that verifies its
+    /// fair-mode dice on match end, delivering each report to
+    /// <paramref name="onVerified"/>. Connect awaited here; served in the
+    /// background until teardown.
+    /// </summary>
+    public static async Task RunVerifyingClientAsync(
+        WebApplicationFactory<Program> factory,
+        string name,
+        int seed,
+        Action<DiceVerificationReport> onVerified,
+        CancellationToken cancellationToken)
+    {
+        var socket = await factory.Server.CreateWebSocketClient()
+            .ConnectAsync(new Uri("ws://localhost/engine"), cancellationToken);
+        var client = new EngineClient.EngineClient(
+            new EngineIdentity(name), new RandomPlayAgent(seed), new PassiveCubeAgent(),
+            logger: null, onDiceVerified: onVerified);
+        _ = Task.Run(
+            async () =>
+            {
+                try
+                {
+                    await client.ServeAsync(socket, cancellationToken);
+                }
+                catch (Exception ex) when (ex is OperationCanceledException or WebSocketException or IOException)
+                {
+                    // Test teardown: server or token ended the session.
+                }
+            },
+            CancellationToken.None);
+    }
+
+    /// <summary>
     /// Connect a real EngineClient over BgInference's agents (the dogfooding
     /// door: exactly the way a third-party engine enters) — connect awaited
     /// here, then served in the background until teardown.
@@ -122,6 +155,23 @@ internal static class ServerHarness
         return body;
     }
 
+    /// <summary>Start a match with no seed — selecting fair (verifiable) dice mode.</summary>
+    public static async Task<JsonElement> StartFairMatchAsync(
+        WebApplicationFactory<Program> factory,
+        string engineOne,
+        string engineTwo,
+        int matchLength,
+        int? maxGames = null)
+    {
+        using var http = factory.CreateClient();
+        var response = await http.PostAsJsonAsync(
+            "/matches",
+            new { engineOne, engineTwo, matchLength, maxGames });
+        var body = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.True(response.IsSuccessStatusCode, $"POST /matches (fair) failed: {response.StatusCode} {body}");
+        return body;
+    }
+
     public static async Task<JsonElement> GetMatchAsync(WebApplicationFactory<Program> factory, string matchId)
     {
         using var http = factory.CreateClient();
@@ -160,6 +210,22 @@ internal static class ServerHarness
             new { participants, matchLength, matchesPerPairing, seed });
         var body = await response.Content.ReadFromJsonAsync<JsonElement>();
         Assert.True(response.IsSuccessStatusCode, $"POST /tournaments failed: {response.StatusCode} {body}");
+        return body;
+    }
+
+    /// <summary>Start a tournament with no seed — selecting fair (verifiable) dice for every match.</summary>
+    public static async Task<JsonElement> StartFairTournamentAsync(
+        WebApplicationFactory<Program> factory,
+        IReadOnlyList<string> participants,
+        int matchLength,
+        int matchesPerPairing)
+    {
+        using var http = factory.CreateClient();
+        var response = await http.PostAsJsonAsync(
+            "/tournaments",
+            new { participants, matchLength, matchesPerPairing });
+        var body = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.True(response.IsSuccessStatusCode, $"POST /tournaments (fair) failed: {response.StatusCode} {body}");
         return body;
     }
 

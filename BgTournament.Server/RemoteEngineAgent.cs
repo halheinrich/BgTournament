@@ -28,13 +28,25 @@ internal sealed class RemoteEngineAgent : IPlayAgent, ICubeAgent
     private readonly IEngineChannel _channel;
     private readonly MatchSeat _seat;
     private readonly TimeSpan _decisionTimeout;
+    private readonly Func<int>? _rollsProduced;
 
-    public RemoteEngineAgent(IEngineChannel channel, MatchSeat seat, TimeSpan decisionTimeout)
+    /// <param name="channel">The connected engine's query channel.</param>
+    /// <param name="seat">Which seat this engine occupies (for forfeit attribution).</param>
+    /// <param name="decisionTimeout">Per-decision timeout before a query times out.</param>
+    /// <param name="rollsProduced">
+    /// Fair mode only: reads the match's running roll count, so each play query
+    /// can be stamped with its roll's stream index (<c>rollIndex = rollsProduced()
+    /// - 1</c>). Null in explicit-seed mode — no commitment, so the index has
+    /// nothing to verify against and is omitted.
+    /// </param>
+    public RemoteEngineAgent(
+        IEngineChannel channel, MatchSeat seat, TimeSpan decisionTimeout, Func<int>? rollsProduced = null)
     {
         ArgumentNullException.ThrowIfNull(channel);
         _channel = channel;
         _seat = seat;
         _decisionTimeout = decisionTimeout;
+        _rollsProduced = rollsProduced;
     }
 
     /// <inheritdoc/>
@@ -43,8 +55,17 @@ internal sealed class RemoteEngineAgent : IPlayAgent, ICubeAgent
     {
         ArgumentNullException.ThrowIfNull(state);
         var wireState = state.Snapshot().ToWireState();
+
+        // Fair mode: this roll's 0-based stream index. The runner takes exactly
+        // one roll immediately before this query, so the last-produced roll is
+        // the one being played (see CountingDiceSource).
+        int? rollIndex = _rollsProduced is null ? null : _rollsProduced() - 1;
+
         var reply = await QueryAsync<PlayReplyMessage>(
-            id => new PlayQueryMessage { RequestId = id, State = wireState, Die1 = die1, Die2 = die2 },
+            id => new PlayQueryMessage
+            {
+                RequestId = id, State = wireState, Die1 = die1, Die2 = die2, RollIndex = rollIndex,
+            },
             "play",
             AgentContractViolationKind.IllegalPlay,
             cancellationToken).ConfigureAwait(false);

@@ -17,4 +17,21 @@ public sealed record MatchStartedMessage : ProtocolMessage
 
     /// <summary>Games cap, when configured (always present for money sessions).</summary>
     public int? MaxGames { get; init; }
+
+    /// <summary>
+    /// Fair-mode only: the pre-match commitment to this match's dice key, as a
+    /// lowercase-hex SHA-256 digest (see PROTOCOL.md, "Provably-fair dice").
+    /// Present together with <see cref="DiceAlgorithm"/> when the server drives
+    /// the match with verifiable dice; omitted for explicit-seed (dev/repro)
+    /// matches, which carry no commitment. The revealing key arrives on
+    /// <see cref="MatchEndedMessage.DiceKey"/> at match end.
+    /// </summary>
+    public string? DiceCommitment { get; init; }
+
+    /// <summary>
+    /// Fair-mode only: the identifier of the dice derivation the commitment
+    /// covers (<see cref="VerifiableDice.AlgorithmId"/>), so a verifier knows
+    /// which algorithm to re-implement. Present iff <see cref="DiceCommitment"/> is.
+    /// </summary>
+    public string? DiceAlgorithm { get; init; }
 }

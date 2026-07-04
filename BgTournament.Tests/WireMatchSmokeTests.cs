@@ -2,6 +2,7 @@ using BgGame_Lib;
 using BgInference;
 using BgTournament.Api;
 using BgTournament.EngineClient;
+using BgTournament.Protocol;
 using BgTournament.Server;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -131,6 +132,100 @@ public class WireMatchSmokeTests
         Assert.Equal(first.SeatOneScore, second.SeatOneScore);
         Assert.Equal(first.SeatTwoScore, second.SeatTwoScore);
         Assert.Equal(first.Games, second.Games);
+    }
+
+    /// <summary>
+    /// The fairness proof, both halves. A seedless (fair-mode) match plays to
+    /// completion over the real wire while each engine's SDK verifier checks
+    /// every roll it observed against the revealed key — the player-verifiable
+    /// half. Then the test re-derives the whole committed stream from the
+    /// revealed key and walks it against the server's retained transcript — the
+    /// auditor-verifiable half, covering the rolls no single engine saw.
+    /// </summary>
+    [Fact]
+    public async Task SmokeC_FairMode_PlayersVerifyObservedRolls_AndTheFullStreamMatchesTheTranscript()
+    {
+        using var factory = ServerHarness.NewFactory();
+        var reportOne = new TaskCompletionSource<DiceVerificationReport>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var reportTwo = new TaskCompletionSource<DiceVerificationReport>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        await ServerHarness.RunVerifyingClientAsync(
+            factory, "FairOne", seed: 101, r => reportOne.TrySetResult(r), CancellationToken.None);
+        await ServerHarness.RunVerifyingClientAsync(
+            factory, "FairTwo", seed: 202, r => reportTwo.TrySetResult(r), CancellationToken.None);
+        await ServerHarness.WaitForEnginesAsync(factory, "FairOne", "FairTwo");
+
+        var match = await ServerHarness.StartFairMatchAsync(factory, "FairOne", "FairTwo", matchLength: 5);
+        string matchId = match.GetProperty("matchId").GetString()!;
+        var summary = await ServerHarness.WaitForMatchEndAsync(factory, matchId, SmokeDeadline);
+        Assert.Equal("completed", summary.GetProperty("status").GetString());
+
+        var record = RecordOf(factory, matchId);
+        AssertCompletedMatchInvariants(record, "FairOne", "FairTwo", matchLength: 5);
+
+        // Player-verifiable half: each engine confirmed every roll it observed
+        // sat at its committed stream position.
+        var verdictOne = await reportOne.Task.WaitAsync(SmokeDeadline);
+        var verdictTwo = await reportTwo.Task.WaitAsync(SmokeDeadline);
+        Assert.True(verdictOne.Verified, $"FairOne: {verdictOne.Outcome} — {verdictOne.Detail}");
+        Assert.True(verdictTwo.Verified, $"FairTwo: {verdictTwo.Outcome} — {verdictTwo.Detail}");
+        Assert.True(verdictOne.ObservedRollCount > 0, "FairOne observed no rolls to verify.");
+        Assert.True(verdictTwo.ObservedRollCount > 0, "FairTwo observed no rolls to verify.");
+
+        // Auditor-verifiable half: the committed key reproduces the whole
+        // transcript, including rolls neither engine was shown.
+        AssertTranscriptMatchesCommittedStream(record);
+    }
+
+    private static MatchRecord RecordOf(
+        Microsoft.AspNetCore.Mvc.Testing.WebApplicationFactory<Program> factory, string matchId)
+    {
+        var matches = factory.Services.GetRequiredService<MatchService>();
+        Assert.True(matches.TryGetRecord(matchId, out var record));
+        return record;
+    }
+
+    /// <summary>
+    /// Re-derive the match's full committed dice stream from the revealed key and
+    /// confirm it reproduces every recorded roll. Per game the stream opens with
+    /// zero or more re-rolled ties (doubles, never transcripted) up to the opening
+    /// non-double — the game's first play — after which every play consumes exactly
+    /// one roll in order (dances included).
+    /// </summary>
+    private static void AssertTranscriptMatchesCommittedStream(MatchRecord record)
+    {
+        Assert.NotNull(record.DiceKey);
+        Assert.NotNull(record.Result);
+
+        // The commitment published before roll one matches the revealed key.
+        Assert.True(
+            record.Commitment!.Verifies(record.DiceKey!, VerifiableDice.ContextFor(record.MatchId)),
+            "The revealed key does not reproduce the published commitment.");
+
+        var stream = new VerifiableDiceSource(record.DiceKey!);
+        foreach (var game in record.Result!.Games)
+        {
+            var plays = game.Transcript.Entries.OfType<PlayTranscriptEntry>().ToList();
+            Assert.NotEmpty(plays);
+
+            // Opening: skip re-rolled ties to the opening non-double roll.
+            (int Die1, int Die2) roll;
+            do
+            {
+                roll = stream.Roll();
+            }
+            while (roll.Die1 == roll.Die2);
+            Assert.Equal((plays[0].Die1, plays[0].Die2), roll);
+
+            // Every subsequent play consumes one roll, in order.
+            for (int i = 1; i < plays.Count; i++)
+            {
+                roll = stream.Roll();
+                Assert.Equal((plays[i].Die1, plays[i].Die2), roll);
+            }
+        }
     }
 
     [Fact]

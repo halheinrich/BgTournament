@@ -21,8 +21,32 @@ internal sealed class MatchRecord
 
     public int? MaxGames { get; init; }
 
-    /// <summary>The dice seed. Recorded even when server-chosen, so any match can be re-rolled.</summary>
+    /// <summary>
+    /// The dice seed, always recorded. In explicit-seed (dev/repro) mode it
+    /// drives the match's <see cref="SeededDiceSource"/>. In fair mode
+    /// (<see cref="DiceKey"/> present) the committed key drives the dice instead,
+    /// and this remains a recorded per-match datum — not the reproduction key
+    /// (the revealed <see cref="DiceKey"/> is). Never null, so the admin summary
+    /// shape is unchanged whichever mode a match runs in.
+    /// </summary>
     public required int Seed { get; init; }
+
+    /// <summary>
+    /// Fair mode: the secret 256-bit key driving this match's verifiable dice,
+    /// committed before the first roll and revealed at match end. Null for
+    /// explicit-seed matches, which run the (uncommitted) <see cref="SeededDiceSource"/>.
+    /// Kept secret until <see cref="MatchEndedMessage"/> — never projected onto the
+    /// admin surface.
+    /// </summary>
+    public DiceKey? DiceKey { get; init; }
+
+    /// <summary>
+    /// The pre-match commitment published on <see cref="MatchStartedMessage"/>,
+    /// bound to this match id — or null in explicit-seed mode. Derived (not
+    /// stored) so the key stays the single source and the commitment cannot drift
+    /// from it.
+    /// </summary>
+    public DiceCommitment? Commitment => DiceKey?.Commit(VerifiableDice.ContextFor(MatchId));
 
     /// <summary>
     /// Monotonic creation order, for stable listings — a concurrent
@@ -181,8 +205,13 @@ internal sealed class MatchService
             return (null, StartMatchError.EngineBusy, $"Engine '{engineTwo}' is already in a match.");
         }
 
+        // An explicit seed selects the reproducible, uncommitted SeededDiceSource
+        // (dev/repro). Omitting it selects fair mode: a freshly generated key
+        // drives verifiable dice, committed to the match before roll one and
+        // revealed at match end. A seed is still recorded either way (admin datum).
+        DiceKey? diceKey = seed is null ? DiceKey.Generate() : null;
         var record = CreateHostedMatch(
-            sessionOne.Name, sessionTwo.Name, matchLength, seed ?? Random.Shared.Next(), maxGames);
+            sessionOne.Name, sessionTwo.Name, matchLength, seed ?? Random.Shared.Next(), maxGames, diceKey);
 
         _ = Task.Run(
             async () =>
@@ -202,11 +231,14 @@ internal sealed class MatchService
     }
 
     /// <summary>
-    /// Create and retain a Running record for a match this service will
-    /// host. The caller owns the engines' busy claims.
+    /// Create and retain a Running record for a match this service will host.
+    /// The caller owns the engines' busy claims. Pass <paramref name="diceKey"/>
+    /// to run the match on committed, verifiable fair-mode dice; omit it for the
+    /// explicit-seed <see cref="SeededDiceSource"/>.
     /// </summary>
     public MatchRecord CreateHostedMatch(
-        string engineOne, string engineTwo, int matchLength, int seed, int? maxGames = null)
+        string engineOne, string engineTwo, int matchLength, int seed, int? maxGames = null,
+        DiceKey? diceKey = null)
     {
         var matchId = Guid.NewGuid().ToString("N");
         var record = new MatchRecord
@@ -217,6 +249,7 @@ internal sealed class MatchService
             MatchLength = matchLength,
             MaxGames = maxGames,
             Seed = seed,
+            DiceKey = diceKey,
             Sequence = Interlocked.Increment(ref _sequenceSource),
             Live = new LiveMatch(matchId, _logger),
         };
@@ -261,11 +294,20 @@ internal sealed class MatchService
             await NotifyStartedAsync(record, sessionOne, opponent: sessionTwo.Name, matchCts.Token);
             await NotifyStartedAsync(record, sessionTwo, opponent: sessionOne.Name, matchCts.Token);
 
-            var runner = new MatchRunner(new SeededDiceSource(record.Seed));
+            // Fair mode drives the runner with the committed key's verifiable
+            // stream; explicit-seed mode with the reproducible SeededDiceSource.
+            // The counting wrapper lets each play query carry its roll index (fair
+            // mode only — seeded matches have no commitment to verify against).
+            bool fairMode = record.DiceKey is not null;
+            var counting = new CountingDiceSource(
+                fairMode ? new VerifiableDiceSource(record.DiceKey!) : new SeededDiceSource(record.Seed));
+            Func<int>? rollsProduced = fairMode ? () => counting.RollsProduced : null;
+
+            var runner = new MatchRunner(counting);
             var participantOne = MatchParticipant.From(
-                new RemoteEngineAgent(sessionOne.Connection, MatchSeat.One, _options.DecisionTimeout));
+                new RemoteEngineAgent(sessionOne.Connection, MatchSeat.One, _options.DecisionTimeout, rollsProduced));
             var participantTwo = MatchParticipant.From(
-                new RemoteEngineAgent(sessionTwo.Connection, MatchSeat.Two, _options.DecisionTimeout));
+                new RemoteEngineAgent(sessionTwo.Connection, MatchSeat.Two, _options.DecisionTimeout, rollsProduced));
 
             var result = await runner.RunMatchAsync(
                 participantOne, participantTwo, record.MatchLength, record.MaxGames,
@@ -349,6 +391,8 @@ internal sealed class MatchService
     private async Task NotifyStartedAsync(
         MatchRecord record, EngineSession session, string opponent, CancellationToken cancellationToken)
     {
+        // Fair mode: publish the commitment + algorithm before the first roll.
+        // Explicit-seed matches carry neither (both null ⇒ omitted on the wire).
         await session.Connection.SendAsync(
             new MatchStartedMessage
             {
@@ -356,6 +400,8 @@ internal sealed class MatchService
                 Opponent = opponent,
                 MatchLength = record.MatchLength,
                 MaxGames = record.MaxGames,
+                DiceCommitment = record.Commitment?.ToHex(),
+                DiceAlgorithm = record.DiceKey is null ? null : VerifiableDice.AlgorithmId,
             },
             cancellationToken);
     }
@@ -387,6 +433,12 @@ internal sealed class MatchService
                         ? null
                         : record.ForfeitedBy == ownName ? ForfeitSide.You : ForfeitSide.Opponent,
                     Detail = record.Detail,
+
+                    // Fair mode: reveal the key so either party re-derives and
+                    // audits every roll that occurred — including on a forfeit,
+                    // which still reveals the (partial) stream that was played.
+                    // Omitted for explicit-seed matches.
+                    DiceKey = record.DiceKey?.ToHex(),
                 },
                 CancellationToken.None);
         }

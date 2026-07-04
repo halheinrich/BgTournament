@@ -6,7 +6,7 @@ namespace BgTournament.Api;
 /// <param name="EngineTwo">Engine occupying seat Two.</param>
 /// <param name="MatchLength">Match length in points; 0 is a money session.</param>
 /// <param name="MaxGames">The games cap, when one was set.</param>
-/// <param name="Seed">The dice seed. Recorded even when server-chosen, so any match can be re-rolled.</param>
+/// <param name="Seed">The recorded dice seed. In dev/repro mode (an explicit seed was supplied) it re-rolls the match. In fair mode (no seed supplied — see PROTOCOL.md, "Provably-fair dice") it is a server-chosen recorded value that does <b>not</b> drive the dice: the committed key does, and only the revealed key reproduces the match. Do not treat a fair-mode seed as a reproduction key.</param>
 /// <param name="Status">Where the match is in its lifecycle.</param>
 /// <param name="Winner">Winning engine's name; null while running or when there is no winner.</param>
 /// <param name="SeatOneScore">Seat One's final points; null until the match completes naturally.</param>

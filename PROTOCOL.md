@@ -175,7 +175,12 @@ exists, reply with an empty `moves` array:
 ```
 
 (The server may also skip you entirely for closed-out dance turns — you simply
-won't be queried.) An illegal or unresolvable play forfeits the match; see §8.
+won't be queried.) An illegal or unresolvable play forfeits the match; see §9.
+
+**Roll index (fair mode).** When the match runs on provably-fair dice (§8), each
+`playQuery` also carries `rollIndex` — this roll's 0-based position in the
+match's dice stream — so you can verify the roll against the committed key once
+it is revealed. It is omitted for explicit-seed matches. See §8 for the recipe.
 
 ### cubeOfferQuery → cubeOfferReply
 
@@ -227,11 +232,123 @@ is omitted when there is no winner (money sessions; a games cap reached with
 no side at the match length). `forfeitedBy` (`"you"` / `"opponent"`) and the
 optional human-readable `detail` accompany forfeits.
 
+When the server runs the match on **provably-fair dice** (§8), `matchStarted`
+additionally carries `diceCommitment` and `diceAlgorithm`, and `matchEnded`
+carries the revealed `diceKey`:
+
+```json
+{"type":"matchStarted","matchId":"m-1","opponent":"RandomBot","matchLength":7,"diceCommitment":"adc77c694eef819749968e4d9c7e479af9afecd7db819bab37d5bcdb7b34554e","diceAlgorithm":"hmac-sha256-dice-v1"}
+```
+
+```json
+{"type":"matchEnded","matchId":"m-1","reason":"matchComplete","yourPoints":7,"opponentPoints":4,"youWon":true,"diceKey":"0000000000000000000000000000000000000000000000000000000000000000"}
+```
+
+These fields are absent for explicit-seed matches. An engine that ignores them
+plays exactly the same — verifying the dice is optional (§8).
+
 Between `matchStarted` and `matchEnded`, expect decision queries. After
 `matchEnded` you remain registered and idle — unless you forfeited, in which
 case the server closes your connection after sending `matchEnded`.
 
-## 8. Failures and forfeits
+## 8. Provably-fair dice
+
+Unseeded matches run on **verifiable dice**: the server commits to a secret dice
+key before the first roll and reveals it at match end, so either player can
+re-derive every roll and confirm the dice were fixed in advance and never
+adapted to their play. The scheme is deliberately public — verification requires
+re-implementing it — and language-neutral; unpredictability lives solely in the
+secret key.
+
+A match is in fair mode when its `matchStarted` (§7) carries `diceCommitment`
+and `diceAlgorithm`. Explicit-seed matches — a reproducibility/development mode
+selected by supplying a seed — carry neither and are not verifiable.
+
+### 8.1 The algorithm
+
+`diceAlgorithm` is `"hmac-sha256-dice-v1"`. A verifier that does not recognize
+this exact string cannot check the rolls. The key is exactly 32 bytes; `BE64`
+below is an 8-byte big-endian integer.
+
+- **Key.** A 256-bit (32-byte) secret, revealed as `matchEnded.diceKey`, a
+  lowercase-hex string of 64 digits.
+- **Commitment.** `diceCommitment` is `SHA-256(key ‖ UTF-8(context))` as
+  lowercase hex, where the **context** is the exact string
+  `bg-tournament:match:<matchId>` built from the match's own id. Because the key
+  length is fixed at 32 bytes the concatenation is unambiguous — no separator.
+  Binding the id means a commitment for one match cannot be replayed for another.
+- **Keystream.** The concatenation of `HMAC-SHA256(key, BE64(blockIndex))` for
+  `blockIndex = 0, 1, 2, …`. Each block contributes 32 bytes.
+- **Die (rejection sampling).** To produce one die, read the next keystream byte
+  `b`: if `b ≥ 252`, reject it and read the next; otherwise the die is
+  `(b mod 6) + 1`. 252 is the largest multiple of 6 that is ≤ 256, so bytes
+  0–251 map uniformly onto the six faces and 252–255 are discarded — removing the
+  modulo bias a naïve `b mod 6` over all 256 values would introduce.
+- **Roll.** One roll is the next two accepted dice, `(die1, die2)`. Rejected
+  bytes are consumed but never surface; the stream stays aligned across them.
+
+### 8.2 Roll indexing
+
+Each `playQuery` in fair mode carries `rollIndex`: the 0-based ordinal of the
+server roll that produced its `die1`/`die2`. **Every roll the server takes
+advances the index by one** — the opening roll and each re-roll on an opening
+tie, and every turn's roll (including a dance turn, where no legal play exists
+and you are not queried). Cube offers and responses take no roll. So the rolls
+you observe on your own play queries are a **gapped subsequence** of the stream:
+your opponent's rolls, your dances, and opening re-rolls all consume indices you
+never see. The index is what lets you place each observed roll at its true
+position in the committed stream.
+
+Worked example (the all-zero key, from the published vectors in §8.3): its
+stream begins `(4,4), (1,5), …`. The opening roll `(4,4)` is a tie at index 0,
+re-rolled and never shown. Index 1 is `(1,5)` — seat One's die 1, seat Two's die
+5 — so seat Two wins the opening and is queried to play `1` and `5`, at
+`rollIndex` 1:
+
+```json
+{"type":"playQuery","requestId":"q-1","state":{"board":[0,-2,0,0,0,0,5,0,3,0,0,0,-5,5,0,0,0,-3,0,-5,0,0,0,0,2,0],"cubeValue":1,"cubeOwner":"centered","matchLength":7,"yourScore":0,"opponentScore":0,"isCrawford":false},"die1":1,"die2":5,"rollIndex":1}
+```
+
+### 8.3 Verifying a match
+
+Given `diceCommitment` and `diceAlgorithm` from `matchStarted`, the revealed
+`diceKey` from `matchEnded`, and the `(rollIndex, die1, die2)` triples you
+observed on your play queries:
+
+1. Confirm `diceAlgorithm` is `"hmac-sha256-dice-v1"`.
+2. Rebuild `context = "bg-tournament:match:" + matchId` and check that
+   `SHA-256(key ‖ UTF-8(context))` equals `diceCommitment`. If not, the revealed
+   key is not the one committed to — stop.
+3. Re-derive the stream from the key (§8.1) up to your highest observed index.
+4. For each observed `(rollIndex, die1, die2)`, confirm the derived roll at
+   `rollIndex` equals `(die1, die2)`.
+
+If every check passes, every roll you were shown came from the one committed
+stream. Committed cross-language test vectors — commitment, first keystream
+block, and roll sequences, including keys that exercise the rejection branch —
+are published at `BgGame_Lib/spec/verifiable-dice-vectors.json`; a
+re-implementation in any language must reproduce them.
+
+### 8.4 What it proves — and what it doesn't
+
+- **Non-adaptivity (proven).** The whole sequence is fixed by the key, and the
+  key is committed before roll one, so the server cannot react to your play: a
+  post-hoc change fails the commitment check.
+- **Observed-roll integrity (proven, per §8.2).** Indexed verification places
+  each roll you saw at its committed position, so none was substituted. Rolls you
+  did not see — your opponent's, dances — are not on the wire; they are auditable
+  from the server's match transcript, not by an engine over the protocol.
+- **Non-selection (not proven).** In version 1 the server alone supplies the
+  entropy, so nothing stops it from generating many keys and committing to a
+  favorable one before the match begins. Commit-and-reveal binds the server to
+  one sequence; it does not prove that sequence was not cherry-picked. Closing
+  this gap needs **contributory entropy**: the server commits first, each engine
+  then mixes in its own nonce, and the effective key derives from all
+  contributions (e.g. via HKDF) so no single party controls the result. That
+  requires engines to participate in a new required exchange, so it is a future
+  protocol version, not a v1 field (§11).
+
+## 9. Failures and forfeits
 
 The server forfeits an engine's match when the engine:
 
@@ -254,13 +371,13 @@ One benign race is tolerated: if your match ends while your reply is in
 flight (your opponent forfeited while you were deciding), your late reply to
 the just-abandoned query is discarded, not punished.
 
-## 9. Timing
+## 10. Timing
 
 Version 1 has no chess-style clocks. The only timing rules are the handshake
-timeout (§3) and the per-decision timeout (§8), both server-configured. Real
+timeout (§3) and the per-decision timeout (§9), both server-configured. Real
 time controls are planned for a future protocol version.
 
-## 10. Deliberate version-1 gaps
+## 11. Deliberate version-1 gaps
 
 Recorded so they read as decisions, not oversights — candidates for future
 versions:
@@ -273,10 +390,18 @@ versions:
   announced.
 - **Forfeit scores.** On a forfeit the reported points may be `0`–`0`: the
   match is decided by the forfeit itself, and version-1 servers may not
-  retain mid-match scores (§8).
-- **No time controls** beyond the two timeouts (§9).
+  retain mid-match scores (§9).
+- **No time controls** beyond the two timeouts (§10).
+- **Dice non-selection.** Fair-mode dice (§8) prove the server did not adapt
+  the rolls, but not that it did not cherry-pick a favorable committed
+  sequence — v1 uses server-only entropy. Contributory nonces close this in a
+  future version (§8.4).
 
-## 11. Version history
+## 12. Version history
 
 - **1** — initial protocol: handshake, three decision queries, match
   lifecycle notifications, forfeit semantics.
+  - *Minor addition (fair dice):* optional, ignorable fields —
+    `matchStarted.diceCommitment` / `diceAlgorithm`, `matchEnded.diceKey`, and
+    `playQuery.rollIndex` (§8). Additive under §2's unknown-field rule; an
+    unaware engine ignores them and plays identically, so this stays version 1.

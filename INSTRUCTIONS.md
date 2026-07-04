@@ -50,6 +50,7 @@ BgTournament/
 │   ├── CubeOfferQueryMessage.cs / CubeOfferReplyMessage.cs
 │   ├── CubeResponseQueryMessage.cs / CubeResponseReplyMessage.cs
 │   ├── MatchStartedMessage.cs / MatchEndedMessage.cs
+│   ├── VerifiableDice.cs                 fair-dice wire SSOT: algorithm id + commit-context format
 │   ├── WireGameState.cs / WireMove.cs  hand-defined wire shapes (never substrate types)
 │   ├── WireCubeOwner.cs / CubeOfferAction.cs / CubeResponseAction.cs
 │   ├── MatchEndReason.cs / ForfeitSide.cs
@@ -80,6 +81,7 @@ BgTournament/
 │   ├── IEngineChannel.cs               query seam (EngineConnection live, faked in tests)
 │   ├── RemoteEngineAgent.cs            IPlayAgent+ICubeAgent over the channel; taxonomy
 │   ├── PlayResolver.cs                 wire play → canonical hit-encoded candidate
+│   ├── CountingDiceSource.cs           IDiceSource wrapper counting rolls (fair-mode play-query roll index)
 │   ├── EngineRegistry.cs               sessions by name; per-engine busy flag
 │   ├── MatchService.cs                 match host: attribution, forfeits, records
 │   ├── TournamentService.cs            tournament host: claims, orchestration, folding
@@ -89,9 +91,11 @@ BgTournament/
 │   ├── ReplayProjection.cs             transcript → replay contract: stamped-seat read + flip
 │   └── LiveMatch.cs                    per-match live cache + SSE broadcast (the IMatchObserver adapter)
 ├── BgTournament.EngineClient/          .NET SDK + reference bot
-│   ├── EngineClient.cs                 connect/handshake/serve loop over local agents
+│   ├── EngineClient.cs                 connect/handshake/serve loop over local agents; optional fair-dice verify hook
 │   ├── EngineIdentity.cs               hello identity
 │   ├── HandshakeRejectedException.cs
+│   ├── DiceVerification.cs             pure fair-dice verifier + DiceVerificationReport / ObservedRoll
+│   ├── DiceAuditRecorder.cs            per-match observation accumulator feeding the verifier at match end
 │   ├── RandomPlayAgent.cs              reference play policy (seed required)
 │   └── PassiveCubeAgent.cs             reference cube policy (never double, always take)
 └── BgTournament.Tests/
@@ -105,7 +109,10 @@ BgTournament/
     ├── RemoteEngineAgentTests.cs       forfeit taxonomy over a scripted channel
     ├── ServerTestHarness.cs            TestEngine (raw-wire scripting) + helpers
     ├── ServerIntegrationTests.cs       handshake gate + taxonomy over TestServer
-    ├── WireMatchSmokeTests.cs          full wire matches: random pair + BgInference
+    ├── WireMatchSmokeTests.cs          full wire matches: random pair + BgInference + fair-mode (SmokeC)
+    ├── DiceVerificationTests.cs        the pure fair-dice verifier (verify / mismatch / unknown-algo / bounds)
+    ├── FairDiceLifecycleTests.cs       wire-boundary branch: seeded omits fields, fair publishes commitment
+    ├── TournamentFairDiceTests.cs      unseeded tournament ⇒ per-match keys; seeded ⇒ none
     ├── ListEndpointTests.cs            /matches + /tournaments listings, creation order
     ├── ReplayProjectionTests.cs        the stamped-seat projection on scripted-dice MatchRunner runs
     ├── ReplayEndpointTests.cs          /matches/{id}/games over TestServer, 404/409/partial
@@ -176,6 +183,37 @@ mid-match takes the forfeit — even while its opponent is thinking), per-receiv
 `MatchResult` with transcripts for completed matches). Aborted/Faulted matches
 end silently on the wire — v1 has no vocabulary for them and never lies about
 a reason.
+
+**Provably-fair dice (commit-and-reveal).** Unseeded matches run on
+verifiable dice (BgGame_Lib's `VerifiableDiceSource`): the server generates a
+per-match `DiceKey`, publishes `key.Commit("bg-tournament:match:<matchId>")`
+on `matchStarted` (with the `hmac-sha256-dice-v1` algorithm id) before the
+first roll, and reveals the key on `matchEnded`, so either player re-derives
+every roll and confirms the dice were fixed in advance and never adapted.
+**Fair mode is the default** — omitting the `POST /matches` seed selects it;
+an explicit seed keeps the reproducible, uncommitted `SeededDiceSource`
+(dev/repro), which sends none of the fair fields. All additions are
+**additive under PROTOCOL.md §2's ignore-unknown-fields rule — the protocol
+stays v1** (an unaware engine ignores them and plays identically). The
+algorithm id and context format are single-sourced in `Protocol/VerifiableDice`
+so producer, verifier, and goldens speak one string. Each `playQuery` also
+carries a `rollIndex` (fair mode only) — the roll's 0-based stream position,
+sourced from a `CountingDiceSource` wrapping the real source — so an engine
+places each observed roll (a gapped subsequence: it never sees opponent turns,
+dances, or opening re-rolls) at its true position. Verification is split
+SSOT-style: the server produces; a **pure** `DiceVerification.VerifyMatchDice`
+(in EngineClient, callable by any C# client) checks commitment + each observed
+roll and returns an immutable report; `EngineClient`'s optional
+`onDiceVerified` hook auto-records observations and delivers the report,
+never throwing on failure (the cheating-server policy is the consumer's).
+**What it proves:** non-adaptivity (the whole stream is fixed before roll one)
+and observed-roll integrity. **What it doesn't:** non-selection — server-only
+entropy can't rule out a cherry-picked committed sequence; contributory nonces
+(engine participation → protocol v2) are the recorded upgrade path. Rolls no
+engine saw are auditable from the retained transcript, not the wire. Unseeded
+**tournaments** run each scheduled match on its own generated key; the
+scheduled seed stays structural (schedule shape) in every mode and is not the
+fair-mode dice driver. Seeded tournaments keep the SplitMix64 derivation.
 
 **Tournament shape.** One seam, mirrored one layer up from
 MatchRunner ↔ MatchService: `BgTournament.Core` is an execution-blind,
@@ -288,6 +326,16 @@ public abstract record ProtocolMessage;                        // + 11 sealed me
 public abstract record QueryMessage : ProtocolMessage  { public required string RequestId; }
 public abstract record ReplyMessage : ProtocolMessage  { public required string RequestId; }
 
+// Fair-dice additive fields (fair mode only; omitted for explicit-seed matches):
+//   MatchStartedMessage.DiceCommitment?, .DiceAlgorithm?   (published before roll one)
+//   MatchEndedMessage.DiceKey?                             (revealed at match end)
+//   PlayQueryMessage.RollIndex?                            (this roll's 0-based stream position)
+public static class VerifiableDice          // fair-dice wire SSOT
+{
+    public const string AlgorithmId = "hmac-sha256-dice-v1";
+    public static string ContextFor(string matchId);        // "bg-tournament:match:{matchId}"
+}
+
 public sealed record WireGameState  // board[26] your-frame, cubeValue, cubeOwner,
                                     // matchLength, yourScore, opponentScore, isCrawford, xgid?
 public sealed record WireMove       { public required int From; public required int To; }
@@ -317,9 +365,23 @@ public sealed class ProtocolSocket  // 1 complete text frame = 1 message; 64 KiB
 public sealed class EngineClient
 {
     public EngineClient(EngineIdentity identity, IPlayAgent playAgent, ICubeAgent cubeAgent,
-                        ILogger<EngineClient>? logger = null);
+                        ILogger<EngineClient>? logger = null,
+                        Action<DiceVerificationReport>? onDiceVerified = null);  // fair-dice hook (opt-in)
     public Task RunAsync(Uri serverUri, CancellationToken ct = default);
     public Task ServeAsync(WebSocket socket, CancellationToken ct = default);
+}
+
+// Fair-dice verification — pure, standalone; also driven automatically by the
+// EngineClient hook above (never throws on a failed verdict, it reports it).
+public enum DiceVerificationOutcome { Verified, CommitmentMismatch, RollMismatch, UnknownAlgorithm }
+public sealed record ObservedRoll(int Index, int Die1, int Die2);
+public sealed record DiceVerificationReport(DiceVerificationOutcome Outcome, int ObservedRollCount, string? Detail)
+{ public bool Verified { get; } }
+public static class DiceVerification
+{
+    public static DiceVerificationReport VerifyMatchDice(
+        string matchId, DiceCommitment commitment, string algorithm,
+        DiceKey revealedKey, IReadOnlyList<ObservedRoll> observedRolls);
 }
 public sealed record EngineIdentity   // Name / Version? / Author?; ctor validates non-empty name
 {
@@ -469,6 +531,30 @@ public sealed record LiveTerminalEvent(MatchSummary Match) : LiveMatchEvent;   /
   `Tournament.DeriveMatchSeed` silently changes every tournament's dice.
   Recorded matches stay re-rollable (each match records its own seed), but a
   re-run of a past tournament seed would no longer reproduce it.
+- **Omitting the seed now means fair mode, not a random seeded match.** `POST
+  /matches`/`/tournaments` with no seed selects verifiable dice (commitment on
+  `matchStarted`, reveal on `matchEnded`); only an explicit seed keeps
+  `SeededDiceSource`. Any test that wants deterministic dice must pass a seed.
+- **`rollIndex` leans on the runner's roll-then-query sequencing.**
+  `CountingDiceSource` counts `Roll()` calls; `RemoteEngineAgent` stamps
+  `rollIndex = RollsProduced - 1`, correct only because `MatchRunner` takes
+  exactly one roll immediately before each play query. Cube offers/responses
+  take no roll; a dance takes one but sends no query; opening ties each take
+  one. The fair-mode smoke re-derives the whole stream against the transcript,
+  so a sequencing regression fails loudly. Don't stamp the index anywhere but at
+  play-query time.
+- **The fair-mode `Seed` is structural, not dead code.** In fair mode
+  `MatchRecord.Seed` (and `TournamentMatchEntry.Seed`) is still recorded — the
+  admin `MatchSummary.Seed` stays `int`, so the Api surface is unchanged — but
+  the committed `DiceKey` drives and reproduces the dice, not the seed. The
+  tournament seed always governs schedule *structure*; it drives dice only in
+  seeded mode.
+- **Fair-dice fields are additive v1.** New wire fields ride the ignore-unknown
+  policy (PROTOCOL.md §2); the version stays 1. The algorithm id and commit
+  context are the frozen public contract — `Protocol/VerifiableDice` is their one
+  home; a change breaks every external verifier and the session-1 vectors.
+  `DiceCommitment.Verifies` and the context string must match byte-for-byte
+  across producer and verifier or verification silently fails.
 - **A tournament binds the sessions present at start.** A participant that
   disconnects — or is kicked by a forfeit close — forfeits its remaining
   matches without play, even if it reconnects under the same name. Both sides
