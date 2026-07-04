@@ -11,24 +11,28 @@ using SubstrateResultKind = BgGame_Lib.GameResultKind;
 namespace BgTournament.Server;
 
 /// <summary>
-/// Projects a completed match's substrate transcripts onto the replay
-/// contract (<see cref="MatchGamesResponse"/>). Two jobs the substrate
-/// deliberately leaves to the host:
+/// Projects a match's substrate transcripts onto the replay contract
+/// (<see cref="MatchGamesResponse"/>) and its constituent shapes. Two jobs the
+/// substrate leaves to the host:
 ///
-/// <para><b>Seat attribution (the frame walk).</b> A transcript entry's
-/// <see cref="GameSnapshot"/> is in the on-roll player's frame and carries no
-/// seat identity, so the walk re-derives it from the runner's documented
-/// sequencing: a game's first entry is always the opening play, whose higher
-/// die names the winner (Die1 is seat One's); every play entry flips the
-/// on-roll seat afterwards; cube entries do not flip — the runner snapshots
-/// <em>both</em> the offer and the response against the live state, which
-/// stays in the offerer's frame (the response's actor is the other seat).</para>
+/// <para><b>Seat attribution.</b> A transcript entry's <see cref="GameSnapshot"/>
+/// is in the on-roll player's frame; the entry itself now carries that frame as
+/// <see cref="TranscriptEntry.OnRollSeat"/>, and the subtypes own the
+/// attribution rule — a play's mover is its <c>OnRollSeat</c>, a cube entry's
+/// actor is <see cref="CubeTranscriptEntry.ActingSeat"/>, a game's winner is
+/// <see cref="GameEndedTranscriptEntry.Winner"/>. The projection is a plain
+/// read of those stamped facts; it derives nothing from sequencing.</para>
 ///
 /// <para><b>Frame normalization.</b> Every position is re-expressed in seat
 /// One's frame before it crosses the API, so viewers never handle
 /// perspective. The flip round-trips through the substrate's own
 /// <see cref="GameState.OpponentView"/> — the system's single re-expression;
 /// no mirror rule is duplicated here.</para>
+///
+/// <para>The per-entry (<see cref="ProjectEntry"/>) and per-game
+/// (<see cref="ProjectGame"/>) projections are the single source of truth for
+/// both the settled-replay endpoint and the live per-move feed
+/// (<c>LiveMatch</c>).</para>
 /// </summary>
 internal static class ReplayProjection
 {
@@ -54,64 +58,34 @@ internal static class ReplayProjection
             record.MatchId, record.EngineOne, record.EngineTwo, record.MatchLength, games);
     }
 
-    private static GameReplay ProjectGame(GameRecord game, int gameNumber)
+    /// <summary>Project one recorded game onto its replay shape.</summary>
+    public static GameReplay ProjectGame(GameRecord game, int gameNumber)
     {
         var entries = game.Transcript.Entries;
-        if (entries.Count == 0 || entries[0] is not PlayTranscriptEntry opening)
+        if (entries.Count == 0)
         {
-            throw new InvalidOperationException(
-                "A recorded game always opens with the opening-roll play entry.");
+            throw new InvalidOperationException("A recorded game always has at least one entry.");
         }
 
-        // The opening roll names the first mover: Die1 is seat One's die,
-        // ties never reach the transcript, the higher die wins.
-        MatchSeat onRollSeat = opening.Die1 > opening.Die2 ? MatchSeat.One : MatchSeat.Two;
-        (int seatOneScore, int seatTwoScore) = ScoresBySeat(opening.State.Match, onRollSeat);
-        bool isCrawford = opening.State.Match.IsCrawford;
+        // Entering scores and Crawford are constant across the game; read them
+        // from the first entry, interpreted in that entry's stamped frame.
+        var first = entries[0];
+        (int seatOneScore, int seatTwoScore) = ScoresBySeat(first.State.Match, first.OnRollSeat);
+        bool isCrawford = first.State.Match.IsCrawford;
 
         var projected = new List<GameEntry>(entries.Count);
         GamePosition? finalState = null;
         foreach (var entry in entries)
         {
-            switch (entry)
+            if (entry is GameEndedTranscriptEntry end)
             {
-                case PlayTranscriptEntry play:
-                    projected.Add(new PlayEntry(
-                        ToSeat(onRollSeat),
-                        ToPosition(play.State, onRollSeat),
-                        play.Die1,
-                        play.Die2,
-                        ToMoves(play.ChosenPlay)));
-                    onRollSeat = onRollSeat.Other();   // ApplyPlay flipped the live frame
-                    break;
-
-                case CubeTranscriptEntry { Action: CubeAction.Double } offer:
-                    projected.Add(new CubeOfferEntry(
-                        ToSeat(onRollSeat), ToPosition(offer.State, onRollSeat)));
-                    break;
-
-                case CubeTranscriptEntry { Action: CubeAction.Take or CubeAction.Pass } response:
-                    // Recorded against the live state — still the offerer's
-                    // frame — while the decision belongs to the other seat.
-                    projected.Add(new CubeResponseEntry(
-                        ToSeat(onRollSeat.Other()),
-                        ToPosition(response.State, onRollSeat),
-                        response.Action == CubeAction.Take
-                            ? ApiCubeResponse.Take
-                            : ApiCubeResponse.Pass));
-                    break;
-
-                case GameEndedTranscriptEntry end:
-                    // Not an entry in the contract: the outcome lives at game
-                    // level and the terminal position becomes FinalState. The
-                    // frame here is wherever the last flip left the live state.
-                    finalState = ToPosition(end.State, onRollSeat);
-                    break;
-
-                default:
-                    throw new InvalidOperationException(
-                        $"Unexpected transcript entry: {entry.GetType().Name}.");
+                // Not an entry in the contract: the outcome lives at game level
+                // and the terminal position becomes FinalState.
+                finalState = ToPosition(end.State, end.OnRollSeat);
+                continue;
             }
+
+            projected.Add(ProjectEntry(entry));
         }
 
         return new GameReplay(
@@ -127,6 +101,36 @@ internal static class ReplayProjection
             finalState ?? throw new InvalidOperationException(
                 "A recorded game always terminates with a game-end entry."));
     }
+
+    /// <summary>
+    /// Project a single decision entry onto its replay shape, reading
+    /// attribution straight off the entry's stamped frame. The terminating
+    /// <see cref="GameEndedTranscriptEntry"/> is not a contract entry — it
+    /// becomes a game's <see cref="GameReplay.FinalState"/>, never a
+    /// <see cref="GameEntry"/> — so passing one is a projection bug.
+    /// </summary>
+    public static GameEntry ProjectEntry(TranscriptEntry entry) => entry switch
+    {
+        PlayTranscriptEntry play => new PlayEntry(
+            ToSeat(play.OnRollSeat),
+            ToPosition(play.State, play.OnRollSeat),
+            play.Die1,
+            play.Die2,
+            ToMoves(play.ChosenPlay)),
+
+        CubeTranscriptEntry { Action: CubeAction.Double } offer => new CubeOfferEntry(
+            ToSeat(offer.ActingSeat), ToPosition(offer.State, offer.OnRollSeat)),
+
+        // Recorded against the live state — still the offerer's frame — while
+        // the decision belongs to ActingSeat (the other seat).
+        CubeTranscriptEntry { Action: CubeAction.Take or CubeAction.Pass } response => new CubeResponseEntry(
+            ToSeat(response.ActingSeat),
+            ToPosition(response.State, response.OnRollSeat),
+            response.Action == CubeAction.Take ? ApiCubeResponse.Take : ApiCubeResponse.Pass),
+
+        _ => throw new InvalidOperationException(
+            $"Cannot project transcript entry as a replay entry: {entry.GetType().Name}."),
+    };
 
     /// <summary>
     /// Express a recorded snapshot as a seat-One-frame position.

@@ -305,10 +305,10 @@ public class ReplayProjectionTests
         var openingPlay = MoveGenerator.GeneratePlays(BoardState.Standard(), 5, 2)[0];
 
         var transcript = new Transcript();
-        transcript.Append(new PlayTranscriptEntry(snapshot, 5, 2, openingPlay));   // seat One opens
-        transcript.Append(new PlayTranscriptEntry(snapshot, 6, 6, default));       // seat Two dances
+        transcript.Append(new PlayTranscriptEntry(snapshot, MatchSeat.One, 5, 2, openingPlay));  // seat One opens
+        transcript.Append(new PlayTranscriptEntry(snapshot, MatchSeat.Two, 6, 6, default));      // seat Two dances
         transcript.Append(new GameEndedTranscriptEntry(
-            snapshot, new GameResult(BgGame_Lib.GameResultKind.WinSingle, OnRollWon: true, CubeSize: 1)));
+            snapshot, MatchSeat.One, new GameResult(BgGame_Lib.GameResultKind.WinSingle, OnRollWon: true, CubeSize: 1)));
 
         var result = new MatchResult(
             Winner: null, SeatOneScore: 1, SeatTwoScore: 0,

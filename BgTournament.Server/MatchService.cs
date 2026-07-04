@@ -257,7 +257,8 @@ internal sealed class MatchService
                 new RemoteEngineAgent(sessionTwo.Connection, MatchSeat.Two, _options.DecisionTimeout));
 
             var result = await runner.RunMatchAsync(
-                participantOne, participantTwo, record.MatchLength, record.MaxGames, matchCts.Token);
+                participantOne, participantTwo, record.MatchLength, record.MaxGames,
+                cancellationToken: matchCts.Token);
 
             record.Result = result;
             record.SeatOneScore = result.SeatOneScore;
