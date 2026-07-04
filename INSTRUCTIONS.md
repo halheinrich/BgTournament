@@ -250,7 +250,11 @@ neither gap nor duplicate; an already-terminal match takes the same one path
 (snapshot → terminal → close). The event payloads are the very replay
 contracts above (`GameEntry` / `GameReplay`) projected identically — the
 single projection SSOT feeds both surfaces — under a small envelope union
-(`LiveMatchEvent`). The one terminal event is emitted by the host
+(`LiveMatchEvent`). A game's frame-free start context (seat-absolute entering
+scores + the Crawford flag) rides `OnGameStarted`'s `GameStartContext` straight
+from the substrate onto `gameStarted` and the current-game `snapshot`; the feed
+holds those values verbatim rather than re-folding a score tally of its own, so
+a live Crawford game renders as Crawford (it previously did not). The one terminal event is emitted by the host
 (`MatchService`, after the outcome is folded into the record), not the
 substrate — which emits nothing on abort — so it fires once for every outcome
 (completed / forfeited / aborted / faulted) and carries the truth. The
@@ -390,9 +394,10 @@ public sealed record PlayMove(int From, int To);            // actor's own numbe
 // No event ids / Last-Event-ID resume in v1 (see gaps): reconnect re-subscribes.
 public abstract record LiveMatchEvent;                      // "type"-discriminated:
 public sealed record LiveSnapshotEvent(int GameNumber, int SeatOneScore,        // "snapshot"
-    int SeatTwoScore, IReadOnlyList<GameEntry> Entries) : LiveMatchEvent;       //   join-in-progress
+    int SeatTwoScore, bool IsCrawford, IReadOnlyList<GameEntry> Entries)        //   join-in-progress:
+    : LiveMatchEvent;                                                           //   current game's context
 public sealed record LiveGameStartedEvent(int GameNumber,                       // "gameStarted"
-    int SeatOneScore, int SeatTwoScore) : LiveMatchEvent;                       //   number + score, no board yet
+    int SeatOneScore, int SeatTwoScore, bool IsCrawford) : LiveMatchEvent;      //   frame-free ctx, no board yet
 public sealed record LiveEntryEvent(GameEntry Entry) : LiveMatchEvent;         // "entry" (per-move increment)
 public sealed record LiveGameEndedEvent(GameReplay Game) : LiveMatchEvent;     // "gameEnded" (canonical game)
 public sealed record LiveTerminalEvent(MatchSummary Match) : LiveMatchEvent;   // "terminal" (final record, then close)

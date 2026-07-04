@@ -28,6 +28,11 @@ public class LiveMatchTests
     private static PlayTranscriptEntry PlayEntry(MatchSeat seat, int die1, int die2) =>
         new(NewSnapshot(), seat, die1, die2, FirstPlay(die1, die2));
 
+    /// <summary>The frame-free game-start context the substrate hands the observer.</summary>
+    private static GameStartContext Started(
+        int gameNumber, int seatOne = 0, int seatTwo = 0, bool crawford = false) =>
+        new(gameNumber, seatOne, seatTwo, crawford);
+
     /// <summary>A minimal completed game won by <paramref name="winner"/> for <paramref name="points"/>.</summary>
     private static GameRecord CompletedGame(MatchSeat winner, int points)
     {
@@ -56,7 +61,7 @@ public class LiveMatchTests
     public async Task Snapshot_IsFirst_AndReflectsEntriesRecordedBeforeTheJoin()
     {
         var live = NewLiveMatch();
-        live.OnGameStarted(1);
+        live.OnGameStarted(Started(1));
         live.OnEntryRecorded(PlayEntry(MatchSeat.One, 6, 3));
         live.OnEntryRecorded(PlayEntry(MatchSeat.Two, 4, 2));
 
@@ -76,7 +81,7 @@ public class LiveMatchTests
     public async Task Subscribe_ThenRecord_DeliversTheEmptySnapshotThenTheIncrement()
     {
         var live = NewLiveMatch();
-        live.OnGameStarted(1);
+        live.OnGameStarted(Started(1));
 
         var subscription = live.Subscribe();
         var snapshot = Assert.IsType<LiveSnapshotEvent>(await NextAsync(subscription));
@@ -91,7 +96,7 @@ public class LiveMatchTests
     public async Task EverySubscriber_ReceivesEveryIncrement()
     {
         var live = NewLiveMatch();
-        live.OnGameStarted(1);
+        live.OnGameStarted(Started(1));
 
         var first = live.Subscribe();
         var second = live.Subscribe();
@@ -108,7 +113,7 @@ public class LiveMatchTests
     public async Task GameEnded_EmitsTheCompletedGame_AndTheNextGameStartsAtTheUpdatedScore()
     {
         var live = NewLiveMatch();
-        live.OnGameStarted(1);
+        live.OnGameStarted(Started(1));
         live.OnEntryRecorded(PlayEntry(MatchSeat.One, 5, 2));
 
         var subscription = live.Subscribe();
@@ -119,19 +124,45 @@ public class LiveMatchTests
         Assert.Equal(1, ended.Game.GameNumber);
         Assert.Equal(Seat.One, ended.Game.Winner);
 
-        // The running score folds the game in: the next game starts 1–0.
-        live.OnGameStarted(2);
+        // The substrate carries the entering scores: the next game starts 1–0.
+        live.OnGameStarted(Started(2, seatOne: 1, seatTwo: 0));
         var started = Assert.IsType<LiveGameStartedEvent>(await NextAsync(subscription));
         Assert.Equal(2, started.GameNumber);
         Assert.Equal(1, started.SeatOneScore);
         Assert.Equal(0, started.SeatTwoScore);
+        Assert.False(started.IsCrawford);
+    }
+
+    [Fact]
+    public async Task Crawford_FlagRidesGameStartedEvent_AndTheLateJoinSnapshot()
+    {
+        var live = NewLiveMatch();
+        live.OnGameStarted(Started(1));                              // pre-Crawford
+        var subscription = live.Subscribe();
+        Assert.IsType<LiveSnapshotEvent>(await NextAsync(subscription));
+
+        // The Crawford game starts at 2–0; the flag rides the live event...
+        live.OnGameStarted(Started(2, seatOne: 2, seatTwo: 0, crawford: true));
+        var started = Assert.IsType<LiveGameStartedEvent>(await NextAsync(subscription));
+        Assert.True(started.IsCrawford);
+
+        // ...and a late joiner's snapshot reports the current (Crawford) game.
+        var lateJoin = live.Subscribe();
+        var snapshot = Assert.IsType<LiveSnapshotEvent>(await NextAsync(lateJoin));
+        Assert.True(snapshot.IsCrawford);
+        Assert.Equal(2, snapshot.GameNumber);
+
+        // The post-Crawford game clears the flag back off the wire.
+        live.OnGameStarted(Started(3, seatOne: 2, seatTwo: 1, crawford: false));
+        var post = Assert.IsType<LiveGameStartedEvent>(await NextAsync(subscription));
+        Assert.False(post.IsCrawford);
     }
 
     [Fact]
     public async Task MarkTerminal_EmitsTheTerminalEvent_ThenClosesTheStream()
     {
         var live = NewLiveMatch();
-        live.OnGameStarted(1);
+        live.OnGameStarted(Started(1));
         var subscription = live.Subscribe();
         Assert.IsType<LiveSnapshotEvent>(await NextAsync(subscription));
 
@@ -150,7 +181,7 @@ public class LiveMatchTests
     public async Task AlreadyTerminal_Join_GetsSnapshotThenTerminalThenClose_OneCodePath()
     {
         var live = NewLiveMatch();
-        live.OnGameStarted(1);
+        live.OnGameStarted(Started(1));
         live.OnGameEnded(1, CompletedGame(MatchSeat.Two, points: 1));
         var summary = new MatchSummary(
             "match-under-test", "Alpha", "Beta", MatchLength: 1, MaxGames: null, Seed: 7,
@@ -172,9 +203,9 @@ public class LiveMatchTests
         var live = NewLiveMatch();
 
         // Game 1 completes; game 2 is interrupted mid-play (no OnGameEnded).
-        live.OnGameStarted(1);
+        live.OnGameStarted(Started(1));
         live.OnGameEnded(1, CompletedGame(MatchSeat.One, points: 1));
-        live.OnGameStarted(2);
+        live.OnGameStarted(Started(2, seatOne: 1, seatTwo: 0));
         live.OnEntryRecorded(PlayEntry(MatchSeat.Two, 6, 4));
 
         // The one finished game is retained for partial replay.
@@ -205,7 +236,7 @@ public class LiveMatchTests
     public async Task ProjectionFault_FailsLoudly_ClosingSubscriberStreamsWithNoTerminal()
     {
         var live = NewLiveMatch();
-        live.OnGameStarted(1);
+        live.OnGameStarted(Started(1));
         var subscription = live.Subscribe();
         Assert.IsType<LiveSnapshotEvent>(await NextAsync(subscription));
 

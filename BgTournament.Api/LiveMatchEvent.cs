@@ -44,25 +44,30 @@ public abstract record LiveMatchEvent;
 /// <param name="GameNumber">1-based number of the game currently in view.</param>
 /// <param name="SeatOneScore">Seat One's match score entering the current game.</param>
 /// <param name="SeatTwoScore">Seat Two's match score entering the current game.</param>
+/// <param name="IsCrawford">True iff the game currently in view is the Crawford game.</param>
 /// <param name="Entries">The current game's decision moments so far, in play order.</param>
 public sealed record LiveSnapshotEvent(
     int GameNumber,
     int SeatOneScore,
     int SeatTwoScore,
+    bool IsCrawford,
     IReadOnlyList<GameEntry> Entries) : LiveMatchEvent;
 
 /// <summary>
 /// A new game is starting. Fires before the opening roll — no board yet (the
 /// substrate provides none until the opening play) — so it carries only the
-/// game number and the running score entering it, for a between-games display.
+/// frame-free game context: the game number, the running score entering it, and
+/// whether it is the Crawford game, for a between-games display.
 /// </summary>
 /// <param name="GameNumber">1-based number of the game starting.</param>
 /// <param name="SeatOneScore">Seat One's match score entering the game.</param>
 /// <param name="SeatTwoScore">Seat Two's match score entering the game.</param>
+/// <param name="IsCrawford">True iff the game starting is the Crawford game.</param>
 public sealed record LiveGameStartedEvent(
     int GameNumber,
     int SeatOneScore,
-    int SeatTwoScore) : LiveMatchEvent;
+    int SeatTwoScore,
+    bool IsCrawford) : LiveMatchEvent;
 
 /// <summary>
 /// One decision moment appended to the current game — the same

@@ -235,20 +235,27 @@ public class ApiGoldenTests
     public void LiveSnapshotEvent_Golden() =>
         AssertGolden<LiveMatchEvent>(
             new LiveSnapshotEvent(
-                GameNumber: 1, SeatOneScore: 0, SeatTwoScore: 0,
+                GameNumber: 1, SeatOneScore: 0, SeatTwoScore: 0, IsCrawford: false,
                 Entries:
                 [
                     new PlayEntry(
                         Seat.One, OpeningPosition(), Die1: 3, Die2: 1,
                         Moves: [new PlayMove(8, 5), new PlayMove(6, 5)]),
                 ]),
-            """{"type":"snapshot","gameNumber":1,"seatOneScore":0,"seatTwoScore":0,"entries":[{"type":"play","die1":3,"die2":1,"moves":[{"from":8,"to":5},{"from":6,"to":5}],"actor":"seatOne","state":{"board":[0,-2,0,0,0,0,5,0,3,0,0,0,-5,5,0,0,0,-3,0,-5,0,0,0,0,2,0],"cubeValue":1,"cubeOwner":"centered"}}]}""");
+            """{"type":"snapshot","gameNumber":1,"seatOneScore":0,"seatTwoScore":0,"isCrawford":false,"entries":[{"type":"play","die1":3,"die2":1,"moves":[{"from":8,"to":5},{"from":6,"to":5}],"actor":"seatOne","state":{"board":[0,-2,0,0,0,0,5,0,3,0,0,0,-5,5,0,0,0,-3,0,-5,0,0,0,0,2,0],"cubeValue":1,"cubeOwner":"centered"}}]}""");
 
     [Fact]
     public void LiveGameStartedEvent_Golden() =>
         AssertGolden<LiveMatchEvent>(
-            new LiveGameStartedEvent(GameNumber: 2, SeatOneScore: 1, SeatTwoScore: 0),
-            """{"type":"gameStarted","gameNumber":2,"seatOneScore":1,"seatTwoScore":0}""");
+            new LiveGameStartedEvent(GameNumber: 2, SeatOneScore: 1, SeatTwoScore: 0, IsCrawford: false),
+            """{"type":"gameStarted","gameNumber":2,"seatOneScore":1,"seatTwoScore":0,"isCrawford":false}""");
+
+    /// <summary>The Crawford game on the wire — the flag the live substrate now carries.</summary>
+    [Fact]
+    public void LiveGameStartedEvent_Crawford_Golden() =>
+        AssertGolden<LiveMatchEvent>(
+            new LiveGameStartedEvent(GameNumber: 5, SeatOneScore: 4, SeatTwoScore: 2, IsCrawford: true),
+            """{"type":"gameStarted","gameNumber":5,"seatOneScore":4,"seatTwoScore":2,"isCrawford":true}""");
 
     [Fact]
     public void LiveEntryEvent_Golden() =>

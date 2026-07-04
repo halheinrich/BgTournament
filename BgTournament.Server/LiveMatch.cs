@@ -43,6 +43,7 @@ internal sealed class LiveMatch : IMatchObserver
     private int _gameNumber;
     private int _seatOneScore;
     private int _seatTwoScore;
+    private bool _isCrawford;
 
     /// <summary>Set on a clean terminal; a faulted feed closes with none.</summary>
     private MatchSummary? _terminalSummary;
@@ -73,13 +74,21 @@ internal sealed class LiveMatch : IMatchObserver
     }
 
     /// <inheritdoc/>
-    public void OnGameStarted(int gameNumber) => SafelyObserve(() =>
+    public void OnGameStarted(GameStartContext context) => SafelyObserve(() =>
     {
         lock (_lock)
         {
-            _gameNumber = gameNumber;
+            // The substrate is the single source of the game's frame-free
+            // context — entering scores (seat-absolute) and the Crawford flag —
+            // so the feed holds them verbatim rather than re-folding a running
+            // tally of its own.
+            _gameNumber = context.GameNumber;
+            _seatOneScore = context.SeatOneScore;
+            _seatTwoScore = context.SeatTwoScore;
+            _isCrawford = context.IsCrawford;
             _currentGameEntries.Clear();
-            Broadcast(new LiveGameStartedEvent(gameNumber, _seatOneScore, _seatTwoScore));
+            Broadcast(new LiveGameStartedEvent(
+                context.GameNumber, context.SeatOneScore, context.SeatTwoScore, context.IsCrawford));
         }
     });
 
@@ -107,16 +116,11 @@ internal sealed class LiveMatch : IMatchObserver
         var replay = ReplayProjection.ProjectGame(record, gameNumber);   // pure, outside the lock
         lock (_lock)
         {
+            // Scores are not re-folded here: the next OnGameStarted carries the
+            // substrate's own entering scores, and the snapshot describes the
+            // current game (its entering scores, held since it started). The
+            // completed game's final scores travel in this event's replay.
             _completedGames.Add(record);
-            if (record.Winner == MatchSeat.One)
-            {
-                _seatOneScore += record.Result.Points;
-            }
-            else
-            {
-                _seatTwoScore += record.Result.Points;
-            }
-
             Broadcast(new LiveGameEndedEvent(replay));
         }
     });
@@ -198,7 +202,7 @@ internal sealed class LiveMatch : IMatchObserver
     }
 
     private LiveSnapshotEvent SnapshotLocked() =>
-        new(_gameNumber, _seatOneScore, _seatTwoScore, _currentGameEntries.ToArray());
+        new(_gameNumber, _seatOneScore, _seatTwoScore, _isCrawford, _currentGameEntries.ToArray());
 
     /// <summary>Fan one event out to every current subscriber. Caller holds the lock; never blocks.</summary>
     private void Broadcast(LiveMatchEvent evt)

@@ -82,6 +82,52 @@ public class LiveEndpointTests
     }
 
     [Fact]
+    public async Task LiveEndpoint_CrawfordCrossing_FlagRidesGameStartedAndLateJoinSnapshot()
+    {
+        // matchLength 3, seed 0: a deterministic match that reaches 2–x and ends
+        // on its Crawford game (four games; the leader wins the Crawford one).
+        // Both engines auto-play first-legal / decline-cube, so the substrate's
+        // Crawford flag is the only thing under test on the wire.
+        using var factory = ServerHarness.NewFactory();
+        await using var alpha = await TestEngine.ConnectAsync(factory, "Alpha");
+        await using var beta = await TestEngine.ConnectAsync(factory, "Beta");
+        await ServerHarness.WaitForEnginesAsync(factory, "Alpha", "Beta");
+
+        var started = await ServerHarness.StartMatchAsync(factory, "Alpha", "Beta", matchLength: 3, seed: 0);
+        string matchId = started.GetProperty("matchId").GetString()!;
+
+        using var http = factory.CreateClient();
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        using var response = await http.GetAsync(
+            $"/matches/{matchId}/live", HttpCompletionOption.ResponseHeadersRead, deadline.Token);
+        response.EnsureSuccessStatusCode();
+
+        var driveAlpha = DriveToEndAsync(alpha);
+        var driveBeta = DriveToEndAsync(beta);
+
+        await using var stream = await response.Content.ReadAsStreamAsync(deadline.Token);
+        var events = await CollectAsync(stream, deadline.Token);
+        await Task.WhenAll(driveAlpha, driveBeta);
+
+        Assert.Equal(MatchStatus.Completed, Assert.IsType<LiveTerminalEvent>(events[^1]).Match.Status);
+
+        // The Crawford flag rides the gameStarted event: exactly one game is
+        // announced Crawford, and it is the last game (the match ends on it).
+        var gameStarts = events.OfType<LiveGameStartedEvent>().ToList();
+        Assert.Single(gameStarts, s => s.IsCrawford);
+        Assert.True(gameStarts[^1].IsCrawford);
+
+        // A joiner arriving after completion sees the last (Crawford) game's
+        // context on its snapshot — the flag reaches late joiners too.
+        using var lateResponse = await http.GetAsync(
+            $"/matches/{matchId}/live", HttpCompletionOption.ResponseHeadersRead, deadline.Token);
+        lateResponse.EnsureSuccessStatusCode();
+        await using var lateStream = await lateResponse.Content.ReadAsStreamAsync(deadline.Token);
+        var lateEvents = await CollectAsync(lateStream, deadline.Token);
+        Assert.True(Assert.IsType<LiveSnapshotEvent>(lateEvents[0]).IsCrawford);
+    }
+
+    [Fact]
     public async Task LiveEndpoint_Forfeit_TerminalCarriesForfeited()
     {
         using var factory = ServerHarness.NewFactory();
