@@ -46,7 +46,7 @@ public class ReplayEndpointTests
     }
 
     [Fact]
-    public async Task GamesEndpoint_ForfeitedMatch_Is409_NoTranscriptsRetained()
+    public async Task GamesEndpoint_ForfeitedBeforeAnyGame_Is200_WithAnEmptyPartialAndForfeitedStatus()
     {
         using var factory = ServerHarness.NewFactory();
         using var teardown = new CancellationTokenSource();
@@ -57,20 +57,22 @@ public class ReplayEndpointTests
         var started = await ServerHarness.StartMatchAsync(factory, "Bad", "Good", matchLength: 1, seed: 1);
         string matchId = started.GetProperty("matchId").GetString()!;
 
-        // Disconnect mid-query — the established forfeit lever: Bad
-        // vanishes on its first decision, forfeiting the match to Good.
+        // Disconnect mid-query — the established forfeit lever: Bad vanishes on
+        // its first decision, before any game finishes.
         _ = await bad.ExpectPlayQueryAsync();
         bad.Abort();
 
         var record = await ServerHarness.WaitForMatchEndAsync(factory, matchId);
         Assert.Equal("forfeited", record.GetProperty("status").GetString());
 
+        // A terminal match serves its retained games — here none finished, so
+        // an empty list, tagged forfeited so the partiality is self-describing.
         using var http = factory.CreateClient();
-        var response = await http.GetAsync($"/matches/{matchId}/games");
+        var replay = await http.GetFromJsonAsync<MatchGamesResponse>($"/matches/{matchId}/games");
 
-        Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
-        var error = await response.Content.ReadFromJsonAsync<ErrorResponse>();
-        Assert.Contains("did not complete", error!.Error);
+        Assert.NotNull(replay);
+        Assert.Equal(MatchStatus.Forfeited, replay.Status);
+        Assert.Empty(replay.Games);
         teardown.Cancel();
     }
 

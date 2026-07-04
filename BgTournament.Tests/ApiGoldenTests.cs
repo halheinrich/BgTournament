@@ -185,7 +185,7 @@ public class ApiGoldenTests
     public void MatchGamesResponse_Golden() =>
         AssertGolden(
             new MatchGamesResponse(
-                "match-1", "Alpha", "Beta", MatchLength: 3,
+                "match-1", "Alpha", "Beta", MatchLength: 3, MatchStatus.Completed,
                 Games:
                 [
                     new GameReplay(
@@ -201,7 +201,7 @@ public class ApiGoldenTests
                         ],
                         FinalState: OpeningPosition(cubeValue: 2, cubeOwner: CubeOwner.SeatOne)),
                 ]),
-            """{"matchId":"match-1","engineOne":"Alpha","engineTwo":"Beta","matchLength":3,"games":[{"gameNumber":1,"winner":"seatTwo","resultKind":"single","cubeValue":2,"points":2,"seatOneScore":0,"seatTwoScore":0,"isCrawford":false,"entries":[{"type":"play","die1":3,"die2":1,"moves":[{"from":8,"to":5},{"from":6,"to":5}],"actor":"seatOne","state":{"board":[0,-2,0,0,0,0,5,0,3,0,0,0,-5,5,0,0,0,-3,0,-5,0,0,0,0,2,0],"cubeValue":1,"cubeOwner":"centered"}},{"type":"cubeOffer","actor":"seatTwo","state":{"board":[0,-2,0,0,0,0,5,0,3,0,0,0,-5,5,0,0,0,-3,0,-5,0,0,0,0,2,0],"cubeValue":1,"cubeOwner":"centered"}},{"type":"cubeResponse","action":"take","actor":"seatOne","state":{"board":[0,-2,0,0,0,0,5,0,3,0,0,0,-5,5,0,0,0,-3,0,-5,0,0,0,0,2,0],"cubeValue":1,"cubeOwner":"centered"}}],"finalState":{"board":[0,-2,0,0,0,0,5,0,3,0,0,0,-5,5,0,0,0,-3,0,-5,0,0,0,0,2,0],"cubeValue":2,"cubeOwner":"seatOne"}}]}""");
+            """{"matchId":"match-1","engineOne":"Alpha","engineTwo":"Beta","matchLength":3,"status":"completed","games":[{"gameNumber":1,"winner":"seatTwo","resultKind":"single","cubeValue":2,"points":2,"seatOneScore":0,"seatTwoScore":0,"isCrawford":false,"entries":[{"type":"play","die1":3,"die2":1,"moves":[{"from":8,"to":5},{"from":6,"to":5}],"actor":"seatOne","state":{"board":[0,-2,0,0,0,0,5,0,3,0,0,0,-5,5,0,0,0,-3,0,-5,0,0,0,0,2,0],"cubeValue":1,"cubeOwner":"centered"}},{"type":"cubeOffer","actor":"seatTwo","state":{"board":[0,-2,0,0,0,0,5,0,3,0,0,0,-5,5,0,0,0,-3,0,-5,0,0,0,0,2,0],"cubeValue":1,"cubeOwner":"centered"}},{"type":"cubeResponse","action":"take","actor":"seatOne","state":{"board":[0,-2,0,0,0,0,5,0,3,0,0,0,-5,5,0,0,0,-3,0,-5,0,0,0,0,2,0],"cubeValue":1,"cubeOwner":"centered"}}],"finalState":{"board":[0,-2,0,0,0,0,5,0,3,0,0,0,-5,5,0,0,0,-3,0,-5,0,0,0,0,2,0],"cubeValue":2,"cubeOwner":"seatOne"}}]}""");
 
     /// <summary>
     /// One completed game, replay-ready — reused as the payload of the live

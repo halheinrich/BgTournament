@@ -146,6 +146,75 @@ public class LiveEndpointTests
         teardown.Cancel();
     }
 
+    [Fact]
+    public async Task LiveEndpoint_ForfeitAfterAGame_ServesThatGameAsPartialReplay()
+    {
+        using var factory = ServerHarness.NewFactory();
+        await using var alpha = await TestEngine.ConnectAsync(factory, "Alpha");
+        await using var beta = await TestEngine.ConnectAsync(factory, "Beta");
+        await ServerHarness.WaitForEnginesAsync(factory, "Alpha", "Beta");
+
+        // Long enough that game 1 (cube declined, so ≤ 3 points) never ends the match.
+        var started = await ServerHarness.StartMatchAsync(factory, "Alpha", "Beta", matchLength: 5, seed: 5);
+        string matchId = started.GetProperty("matchId").GetString()!;
+
+        using var http = factory.CreateClient();
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        using var response = await http.GetAsync(
+            $"/matches/{matchId}/live", HttpCompletionOption.ResponseHeadersRead, deadline.Token);
+        response.EnsureSuccessStatusCode();
+
+        // Beta forfeits on its first query after game 1 completes — signaled off
+        // the live feed's own gameEnded event, so the boundary is deterministic.
+        using var betaForfeit = new CancellationTokenSource();
+        var driveAlpha = DriveToEndAsync(alpha);
+        var driveBeta = DriveToEndAsync(beta, betaForfeit.Token);
+
+        await using var stream = await response.Content.ReadAsStreamAsync(deadline.Token);
+        using var reader = new StreamReader(stream);
+        var events = new List<LiveMatchEvent>();
+        while (await reader.ReadLineAsync(deadline.Token) is { } line)
+        {
+            if (!line.StartsWith("data:", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            string payload = line["data:".Length..].Trim();
+            if (payload.Length == 0)
+            {
+                continue;
+            }
+
+            var liveEvent = JsonSerializer.Deserialize<LiveMatchEvent>(payload, WebJson)!;
+            events.Add(liveEvent);
+            if (liveEvent is LiveGameEndedEvent && events.OfType<LiveGameEndedEvent>().Count() == 1)
+            {
+                betaForfeit.Cancel();
+            }
+
+            if (liveEvent is LiveTerminalEvent)
+            {
+                break;
+            }
+        }
+
+        await Task.WhenAll(driveAlpha, driveBeta);
+
+        Assert.Equal(MatchStatus.Forfeited, Assert.IsType<LiveTerminalEvent>(events[^1]).Match.Status);
+
+        // The partial replay serves exactly the games that finished before the
+        // forfeit — one game here — matching the gameEnded events pushed live.
+        var replay = await http.GetFromJsonAsync<MatchGamesResponse>(
+            $"/matches/{matchId}/games", WebJson, deadline.Token);
+        Assert.NotNull(replay);
+        Assert.Equal(MatchStatus.Forfeited, replay.Status);
+        Assert.NotEmpty(replay.Games);
+        Assert.Equal(
+            events.OfType<LiveGameEndedEvent>().Select(e => Json(e.Game)),
+            replay.Games.Select(Json));
+    }
+
     /// <summary>Read the SSE body, deserializing each event, until the terminal event.</summary>
     private static async Task<List<LiveMatchEvent>> CollectAsync(Stream stream, CancellationToken cancellationToken)
     {
@@ -175,33 +244,50 @@ public class LiveEndpointTests
         return events;
     }
 
-    /// <summary>Auto-play a raw-wire engine to match end: first legal play, decline cubes, take doubles.</summary>
-    private static async Task DriveToEndAsync(TestEngine engine)
+    /// <summary>
+    /// Auto-play a raw-wire engine to match end: first legal play, decline
+    /// cubes, take doubles. If <paramref name="abort"/> fires, the engine
+    /// disconnects on its next query — the forfeit lever, timed by the caller.
+    /// </summary>
+    private static async Task DriveToEndAsync(TestEngine engine, CancellationToken abort = default)
     {
-        while (await engine.ReceiveAsync() is { } message)
+        try
         {
-            switch (message)
+            while (await engine.ReceiveAsync() is { } message)
             {
-                case PlayQueryMessage play:
-                    await engine.ReplyWithFirstLegalPlayAsync(play);
-                    break;
-                case CubeOfferQueryMessage offer:
-                    await engine.SendAsync(new CubeOfferReplyMessage
-                    {
-                        RequestId = offer.RequestId,
-                        Action = CubeOfferAction.NoDouble,
-                    });
-                    break;
-                case CubeResponseQueryMessage responseQuery:
-                    await engine.SendAsync(new CubeResponseReplyMessage
-                    {
-                        RequestId = responseQuery.RequestId,
-                        Action = BgTournament.Protocol.CubeResponseAction.Take,
-                    });
-                    break;
-                case MatchEndedMessage:
+                if (abort.IsCancellationRequested)
+                {
+                    engine.Abort();
                     return;
+                }
+
+                switch (message)
+                {
+                    case PlayQueryMessage play:
+                        await engine.ReplyWithFirstLegalPlayAsync(play);
+                        break;
+                    case CubeOfferQueryMessage offer:
+                        await engine.SendAsync(new CubeOfferReplyMessage
+                        {
+                            RequestId = offer.RequestId,
+                            Action = CubeOfferAction.NoDouble,
+                        });
+                        break;
+                    case CubeResponseQueryMessage responseQuery:
+                        await engine.SendAsync(new CubeResponseReplyMessage
+                        {
+                            RequestId = responseQuery.RequestId,
+                            Action = BgTournament.Protocol.CubeResponseAction.Take,
+                        });
+                        break;
+                    case MatchEndedMessage:
+                        return;
+                }
             }
+        }
+        catch (Exception) when (abort.IsCancellationRequested)
+        {
+            engine.Abort();
         }
     }
 }

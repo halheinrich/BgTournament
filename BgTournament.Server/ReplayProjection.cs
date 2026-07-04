@@ -37,25 +37,26 @@ namespace BgTournament.Server;
 internal static class ReplayProjection
 {
     /// <summary>
-    /// Project the record's retained <see cref="MatchRecord.Result"/> onto
-    /// the replay response. The caller gates on
-    /// <see cref="MatchStatus.Completed"/>; a completed record always
-    /// retains its result.
+    /// Project a terminal match's retained games onto the replay response,
+    /// tagged with the match's <see cref="MatchRecord.Status"/> so a partial
+    /// (non-Completed) list is self-describing. The games come from the
+    /// substrate result when the match completed, else from the games the
+    /// observer collected before the run was interrupted — the same
+    /// <see cref="GameRecord"/> instances either way. The caller gates out
+    /// running matches.
     /// </summary>
     public static MatchGamesResponse ToGamesResponse(this MatchRecord record)
     {
-        var result = record.Result
-            ?? throw new InvalidOperationException(
-                $"Match '{record.MatchId}' has no retained result to project.");
+        IReadOnlyList<GameRecord> source = record.Result?.Games ?? record.Live.CompletedGames;
 
-        var games = new GameReplay[result.Games.Count];
+        var games = new GameReplay[source.Count];
         for (int i = 0; i < games.Length; i++)
         {
-            games[i] = ProjectGame(result.Games[i], gameNumber: i + 1);
+            games[i] = ProjectGame(source[i], gameNumber: i + 1);
         }
 
         return new MatchGamesResponse(
-            record.MatchId, record.EngineOne, record.EngineTwo, record.MatchLength, games);
+            record.MatchId, record.EngineOne, record.EngineTwo, record.MatchLength, record.Status, games);
     }
 
     /// <summary>Project one recorded game onto its replay shape.</summary>

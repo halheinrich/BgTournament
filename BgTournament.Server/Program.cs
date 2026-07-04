@@ -43,8 +43,10 @@ app.MapGet("/matches/{matchId}", (string matchId, MatchService matches) =>
         ? Results.Ok(record.ToSummary())
         : Results.NotFound());
 
-// Replay: a completed match's per-game transcripts, every position
-// re-expressed in seat One's frame so viewers keep a stable orientation.
+// Replay: a terminal match's per-game transcripts, every position re-expressed
+// in seat One's frame so viewers keep a stable orientation. A completed match
+// serves its full games; a forfeited/aborted/faulted one serves the games that
+// finished before the break (partial — the response's status says so).
 app.MapGet("/matches/{matchId}/games", (string matchId, MatchService matches) =>
 {
     if (!matches.TryGetRecord(matchId, out var record))
@@ -52,17 +54,12 @@ app.MapGet("/matches/{matchId}/games", (string matchId, MatchService matches) =>
         return Results.NotFound();
     }
 
-    // Completed matches only: a running match has no settled transcripts
-    // yet, and forfeited/aborted/faulted matches retain none (v1 gap — the
-    // runner's throw discards them).
-    return record.Status switch
-    {
-        MatchStatus.Completed => Results.Ok(record.ToGamesResponse()),
-        MatchStatus.Running => Results.Conflict(new ErrorResponse(
-            $"Match '{matchId}' is still running; its games are served once it completes.")),
-        _ => Results.Conflict(new ErrorResponse(
-            $"Match '{matchId}' did not complete ({record.Status}); only completed matches retain transcripts.")),
-    };
+    // A running match has no settled games yet — the live feed is its surface.
+    return record.Status == MatchStatus.Running
+        ? Results.Conflict(new ErrorResponse(
+            $"Match '{matchId}' is still running; watch it at /matches/{matchId}/live, "
+                + "or read its games once it ends."))
+        : Results.Ok(record.ToGamesResponse());
 });
 
 // Live spectating: a Server-Sent Events feed of one match as it plays. Each

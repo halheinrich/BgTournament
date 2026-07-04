@@ -228,9 +228,11 @@ rule; the flip round-trips through the substrate's own `GameState.OpponentView`
 mover-relative on purpose — that is the frame standard backgammon notation uses
 — and a viewer steps through served positions rather than applying moves. The
 terminal transcript event is not an entry: outcome lives at game level and the
-last position becomes `finalState`. Non-Completed matches answer 409 (running:
-not yet; forfeited/aborted/faulted: no retained result — though the games that
-*did* finish are retained on `LiveMatch`, which a later seam serves).
+last position becomes `finalState`. Only a running match answers 409 (the live
+feed is its surface); every terminal match serves its retained games — the full
+set for a Completed one, and the games that finished before the break
+(retained on `LiveMatch`) for a forfeited/aborted/faulted one — with the
+qualifying `MatchStatus` on the response so a partial list is self-describing.
 
 **Live feed shape.** `GET /matches/{matchId}/live` is a `text/event-stream`
 push of one match as it plays, for the same viewers. `LiveMatch` is the
@@ -368,6 +370,7 @@ public enum GameResultKind { Single, Gammon, Backgammon }
 public enum CubeResponseAction { Take, Pass }
 public sealed record MatchGamesResponse(                    // the endpoint envelope
     string MatchId, string EngineOne, string EngineTwo, int MatchLength,
+    MatchStatus Status,                                     // Completed = full; else a partial list
     IReadOnlyList<GameReplay> Games);
 public sealed record GameReplay(                            // one game, replay-ready
     int GameNumber, Seat Winner, GameResultKind ResultKind, int CubeValue, int Points,
@@ -401,7 +404,7 @@ public sealed record LiveTerminalEvent(MatchSummary Match) : LiveMatchEvent;   /
 //   POST /matches                          {engineOne, engineTwo, matchLength, seed?, maxGames?}
 //   GET  /matches                          every match record, creation order
 //   GET  /matches/{matchId}                record summary (status, winner, scores, forfeit info)
-//   GET  /matches/{matchId}/games          Completed match's replay (409 otherwise)
+//   GET  /matches/{matchId}/games          terminal match's replay, partial if interrupted (409 while running)
 //   GET  /matches/{matchId}/live           text/event-stream: snapshot → per-move → terminal
 //   POST /tournaments                      {participants[], matchLength, matchesPerPairing, seed?}
 //   GET  /tournaments                      every tournament record, creation order
