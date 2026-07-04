@@ -10,6 +10,10 @@
 
   <ItemGroup>
     <InternalsVisibleTo Include="BgTournament.Tests" />
+    <!-- Test-only: BgArena_Blazor's gating smoke boots this server in-proc
+         via WebApplicationFactory<Program>, which needs the internal Program
+         anchor. No runtime surface is exposed. -->
+    <InternalsVisibleTo Include="BgArena_Blazor.Tests" />
   </ItemGroup>
 
   <ItemGroup>
