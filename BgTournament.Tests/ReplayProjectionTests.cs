@@ -3,6 +3,7 @@ using BgGame_Lib;
 using BgMoveGen;
 using BgTournament.Api;
 using BgTournament.Server;
+using Microsoft.Extensions.Logging.Abstractions;
 using ApiCubeOwner = BgTournament.Api.CubeOwner;
 using GameResultKind = BgTournament.Api.GameResultKind;
 
@@ -75,6 +76,7 @@ public class ReplayProjectionTests
             Sequence = 1,
             Status = MatchStatus.Completed,
             Result = result,
+            Live = new LiveMatch("match-under-test", NullLogger.Instance),
         };
         return record.ToGamesResponse();
     }

@@ -202,4 +202,72 @@ public class ApiGoldenTests
                         FinalState: OpeningPosition(cubeValue: 2, cubeOwner: CubeOwner.SeatOne)),
                 ]),
             """{"matchId":"match-1","engineOne":"Alpha","engineTwo":"Beta","matchLength":3,"games":[{"gameNumber":1,"winner":"seatTwo","resultKind":"single","cubeValue":2,"points":2,"seatOneScore":0,"seatTwoScore":0,"isCrawford":false,"entries":[{"type":"play","die1":3,"die2":1,"moves":[{"from":8,"to":5},{"from":6,"to":5}],"actor":"seatOne","state":{"board":[0,-2,0,0,0,0,5,0,3,0,0,0,-5,5,0,0,0,-3,0,-5,0,0,0,0,2,0],"cubeValue":1,"cubeOwner":"centered"}},{"type":"cubeOffer","actor":"seatTwo","state":{"board":[0,-2,0,0,0,0,5,0,3,0,0,0,-5,5,0,0,0,-3,0,-5,0,0,0,0,2,0],"cubeValue":1,"cubeOwner":"centered"}},{"type":"cubeResponse","action":"take","actor":"seatOne","state":{"board":[0,-2,0,0,0,0,5,0,3,0,0,0,-5,5,0,0,0,-3,0,-5,0,0,0,0,2,0],"cubeValue":1,"cubeOwner":"centered"}}],"finalState":{"board":[0,-2,0,0,0,0,5,0,3,0,0,0,-5,5,0,0,0,-3,0,-5,0,0,0,0,2,0],"cubeValue":2,"cubeOwner":"seatOne"}}]}""");
+
+    /// <summary>
+    /// One completed game, replay-ready — reused as the payload of the live
+    /// feed's <c>gameEnded</c> event, so its bytes are pinned once here.
+    /// </summary>
+    private static GameReplay CompletedGame() =>
+        new(
+            GameNumber: 1, Seat.Two, GameResultKind.Single, CubeValue: 2, Points: 2,
+            SeatOneScore: 0, SeatTwoScore: 0, IsCrawford: false,
+            Entries:
+            [
+                new PlayEntry(
+                    Seat.One, OpeningPosition(), Die1: 3, Die2: 1,
+                    Moves: [new PlayMove(8, 5), new PlayMove(6, 5)]),
+                new CubeOfferEntry(Seat.Two, OpeningPosition()),
+                new CubeResponseEntry(Seat.One, OpeningPosition(), CubeResponseAction.Take),
+            ],
+            FinalState: OpeningPosition(cubeValue: 2, cubeOwner: CubeOwner.SeatOne));
+
+    private const string CompletedGameJson =
+        """{"gameNumber":1,"winner":"seatTwo","resultKind":"single","cubeValue":2,"points":2,"seatOneScore":0,"seatTwoScore":0,"isCrawford":false,"entries":[{"type":"play","die1":3,"die2":1,"moves":[{"from":8,"to":5},{"from":6,"to":5}],"actor":"seatOne","state":{"board":[0,-2,0,0,0,0,5,0,3,0,0,0,-5,5,0,0,0,-3,0,-5,0,0,0,0,2,0],"cubeValue":1,"cubeOwner":"centered"}},{"type":"cubeOffer","actor":"seatTwo","state":{"board":[0,-2,0,0,0,0,5,0,3,0,0,0,-5,5,0,0,0,-3,0,-5,0,0,0,0,2,0],"cubeValue":1,"cubeOwner":"centered"}},{"type":"cubeResponse","action":"take","actor":"seatOne","state":{"board":[0,-2,0,0,0,0,5,0,3,0,0,0,-5,5,0,0,0,-3,0,-5,0,0,0,0,2,0],"cubeValue":1,"cubeOwner":"centered"}}],"finalState":{"board":[0,-2,0,0,0,0,5,0,3,0,0,0,-5,5,0,0,0,-3,0,-5,0,0,0,0,2,0],"cubeValue":2,"cubeOwner":"seatOne"}}""";
+
+    /// <summary>
+    /// The live-feed envelope, every event serialized through the polymorphic
+    /// base so the <c>"type"</c> discriminator is emitted — the same
+    /// self-describing union the replay entries use. Payloads reuse the settled
+    /// replay/summary contracts (pinned above), so these pins guard only the
+    /// envelope's own bytes.
+    /// </summary>
+    [Fact]
+    public void LiveSnapshotEvent_Golden() =>
+        AssertGolden<LiveMatchEvent>(
+            new LiveSnapshotEvent(
+                GameNumber: 1, SeatOneScore: 0, SeatTwoScore: 0,
+                Entries:
+                [
+                    new PlayEntry(
+                        Seat.One, OpeningPosition(), Die1: 3, Die2: 1,
+                        Moves: [new PlayMove(8, 5), new PlayMove(6, 5)]),
+                ]),
+            """{"type":"snapshot","gameNumber":1,"seatOneScore":0,"seatTwoScore":0,"entries":[{"type":"play","die1":3,"die2":1,"moves":[{"from":8,"to":5},{"from":6,"to":5}],"actor":"seatOne","state":{"board":[0,-2,0,0,0,0,5,0,3,0,0,0,-5,5,0,0,0,-3,0,-5,0,0,0,0,2,0],"cubeValue":1,"cubeOwner":"centered"}}]}""");
+
+    [Fact]
+    public void LiveGameStartedEvent_Golden() =>
+        AssertGolden<LiveMatchEvent>(
+            new LiveGameStartedEvent(GameNumber: 2, SeatOneScore: 1, SeatTwoScore: 0),
+            """{"type":"gameStarted","gameNumber":2,"seatOneScore":1,"seatTwoScore":0}""");
+
+    [Fact]
+    public void LiveEntryEvent_Golden() =>
+        AssertGolden<LiveMatchEvent>(
+            new LiveEntryEvent(new CubeOfferEntry(Seat.Two, OpeningPosition())),
+            """{"type":"entry","entry":{"type":"cubeOffer","actor":"seatTwo","state":{"board":[0,-2,0,0,0,0,5,0,3,0,0,0,-5,5,0,0,0,-3,0,-5,0,0,0,0,2,0],"cubeValue":1,"cubeOwner":"centered"}}}""");
+
+    [Fact]
+    public void LiveGameEndedEvent_Golden() =>
+        AssertGolden<LiveMatchEvent>(
+            new LiveGameEndedEvent(CompletedGame()),
+            $$"""{"type":"gameEnded","game":{{CompletedGameJson}}}""");
+
+    [Fact]
+    public void LiveTerminalEvent_Golden() =>
+        AssertGolden<LiveMatchEvent>(
+            new LiveTerminalEvent(new MatchSummary(
+                "match-1", "Alpha", "Beta", MatchLength: 3, MaxGames: null, Seed: 42,
+                MatchStatus.Completed, Winner: "Alpha", SeatOneScore: 3, SeatTwoScore: 1,
+                ForfeitedBy: null, Detail: null)),
+            """{"type":"terminal","match":{"matchId":"match-1","engineOne":"Alpha","engineTwo":"Beta","matchLength":3,"maxGames":null,"seed":42,"status":"completed","winner":"Alpha","seatOneScore":3,"seatTwoScore":1,"forfeitedBy":null,"detail":null}}""");
 }

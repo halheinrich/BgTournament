@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using BgTournament.Api;
 using BgTournament.Server;
 
@@ -64,6 +65,22 @@ app.MapGet("/matches/{matchId}/games", (string matchId, MatchService matches) =>
     };
 });
 
+// Live spectating: a Server-Sent Events feed of one match as it plays. Each
+// subscriber gets a join-in-progress snapshot, then per-move increments, then
+// a terminal event, then close. Payloads are the same replay contracts the
+// settled-replay endpoint serves, projected identically.
+app.MapGet("/matches/{matchId}/live", IResult (string matchId, MatchService matches, CancellationToken ct) =>
+{
+    if (!matches.TryGetRecord(matchId, out var record))
+    {
+        return Results.NotFound();
+    }
+
+    // Subscribe before the stream begins: the snapshot is captured and the
+    // subscriber registered atomically, so no event falls in the gap.
+    return TypedResults.ServerSentEvents(StreamLive(record.Live.Subscribe(), ct));
+});
+
 // Round-robin tournaments: server-side orchestration over the same match
 // host — invisible on the wire (engines just see per-match lifecycles).
 app.MapPost("/tournaments", (StartTournamentRequest request, TournamentService tournaments) =>
@@ -88,3 +105,22 @@ app.MapGet("/tournaments/{tournamentId}", (string tournamentId, TournamentServic
         : Results.NotFound());
 
 app.Run();
+
+// Drain one subscriber's ordered event stream to the SSE response, detaching
+// it when the stream ends — whether the match went terminal (the channel
+// completes) or the client disconnected (the request token cancels).
+static async IAsyncEnumerable<LiveMatchEvent> StreamLive(
+    LiveSubscription subscription, [EnumeratorCancellation] CancellationToken cancellationToken)
+{
+    try
+    {
+        await foreach (var liveEvent in subscription.Reader.ReadAllAsync(cancellationToken))
+        {
+            yield return liveEvent;
+        }
+    }
+    finally
+    {
+        subscription.Unsubscribe();
+    }
+}

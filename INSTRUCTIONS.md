@@ -66,7 +66,8 @@ BgTournament/
 │   ├── GameResultKind.cs / CubeResponseAction.cs
 │   ├── GamePosition.cs / PlayMove.cs   seat-One-frame position; mover-relative move
 │   ├── GameEntry.cs                    "type"-discriminated union: play/cubeOffer/cubeResponse
-│   └── GameReplay.cs / MatchGamesResponse.cs   per-game replay + the endpoint envelope
+│   ├── GameReplay.cs / MatchGamesResponse.cs   per-game replay + the endpoint envelope
+│   └── LiveMatchEvent.cs               live-feed envelope union: snapshot/gameStarted/entry/gameEnded/terminal
 ├── BgTournament.Core/                  execution-blind tournament domain (zero dependencies)
 │   ├── TournamentFormat.cs             round-robin config: matchLength × matchesPerPairing
 │   ├── ScheduledMatch.cs               one schedule row: seats + the derived dice seed
@@ -85,7 +86,8 @@ BgTournament/
 │   ├── EngineFailureExceptions.cs      timeout / disconnected / protocol-violation
 │   ├── TournamentOptions.cs            decision + handshake timeouts (appsettings)
 │   ├── ApiMapping.cs                   the ONLY server-internal → Api projections
-│   └── ReplayProjection.cs             transcript → replay contract: frame walk + flip
+│   ├── ReplayProjection.cs             transcript → replay contract: stamped-seat read + flip
+│   └── LiveMatch.cs                    per-match live cache + SSE broadcast (the IMatchObserver adapter)
 ├── BgTournament.EngineClient/          .NET SDK + reference bot
 │   ├── EngineClient.cs                 connect/handshake/serve loop over local agents
 │   ├── EngineIdentity.cs               hello identity
@@ -105,8 +107,10 @@ BgTournament/
     ├── ServerIntegrationTests.cs       handshake gate + taxonomy over TestServer
     ├── WireMatchSmokeTests.cs          full wire matches: random pair + BgInference
     ├── ListEndpointTests.cs            /matches + /tournaments listings, creation order
-    ├── ReplayProjectionTests.cs        the frame walk on scripted-dice MatchRunner runs
-    ├── ReplayEndpointTests.cs          /matches/{id}/games over TestServer, 404/409
+    ├── ReplayProjectionTests.cs        the stamped-seat projection on scripted-dice MatchRunner runs
+    ├── ReplayEndpointTests.cs          /matches/{id}/games over TestServer, 404/409/partial
+    ├── LiveMatchTests.cs               the live cache/broadcast core over its IMatchObserver surface
+    ├── LiveEndpointTests.cs            /matches/{id}/live SSE end to end: ordering, forfeit, already-done
     ├── TournamentCoreTests.cs          domain pins: schedule, seeds, tie-break ladder
     ├── TournamentServerTests.cs        tournament claims, validation, forfeit folding
     └── TournamentSmokeTests.cs         3-engine round-robin over the wire to a winner
@@ -212,23 +216,46 @@ the concurrent dictionaries have no order of their own.
 
 **Replay shape.** `GET /matches/{matchId}/games` projects a Completed match's
 retained transcripts onto the replay contract (`ReplayProjection`). The
-substrate records each decision in the on-roll player's frame with no seat
-identity, so the projection does two host-side jobs. (1) *The frame walk*:
-seat attribution is re-derived from the runner's documented sequencing — a
-game's first entry is the opening play whose higher die names the winner
-(`Die1` is seat One's), every play entry flips the on-roll seat, cube entries
-don't (both the offer and the response snapshot the live state in the
-offerer's frame; the response's actor is the other seat). (2) *Frame
-normalization*: every position is re-expressed in seat One's frame before it
-crosses the API — viewers anchor each engine to one side of the board and
-never learn the frame rule; the flip round-trips through the substrate's own
-`GameState.OpponentView` (the system's single re-expression), never a local
-mirror. Play moves stay mover-relative on purpose — that is the frame
-standard backgammon notation uses — and a viewer steps through served
-positions rather than applying moves. The terminal transcript event is not an
-entry: outcome lives at game level and the last position becomes
-`finalState`. Non-Completed matches answer 409 (running: not yet;
-forfeited/aborted/faulted: no transcripts retained — the v1 gap).
+substrate records each decision in the on-roll player's frame but now stamps
+every entry with its `OnRollSeat` and derives attribution on the subtypes
+(`CubeTranscriptEntry.ActingSeat`, `GameEndedTranscriptEntry.Winner`), so the
+projection does two host-side jobs. (1) *Seat attribution*: a plain read of the
+stamped facts — no sequencing heuristics. (2) *Frame normalization*: every
+position is re-expressed in seat One's frame before it crosses the API —
+viewers anchor each engine to one side of the board and never learn the frame
+rule; the flip round-trips through the substrate's own `GameState.OpponentView`
+(the system's single re-expression), never a local mirror. Play moves stay
+mover-relative on purpose — that is the frame standard backgammon notation uses
+— and a viewer steps through served positions rather than applying moves. The
+terminal transcript event is not an entry: outcome lives at game level and the
+last position becomes `finalState`. Non-Completed matches answer 409 (running:
+not yet; forfeited/aborted/faulted: no retained result — though the games that
+*did* finish are retained on `LiveMatch`, which a later seam serves).
+
+**Live feed shape.** `GET /matches/{matchId}/live` is a `text/event-stream`
+push of one match as it plays, for the same viewers. `LiveMatch` is the
+per-match cache and broadcast hub: an `IMatchObserver` (BgGame_Lib's per-move
+seam) written from the runner's flow and read concurrently by SSE subscribers.
+It is *non-disruptive by construction* — the substrate invokes observer
+callbacks synchronously on the match loop and fails the run if one throws, so
+every callback does only fast in-memory work under a short, essentially
+uncontended lock and enqueues to lock-free channels; it never awaits, blocks,
+or does I/O. A projection bug cannot take the match down: callbacks are
+contained, and a failure *faults the feed loudly* (subscriber streams close, a
+loud EOF) rather than silently stale. Subscribing is atomic snapshot-plus-
+register, so a late joiner's join-in-progress snapshot and its live increments
+neither gap nor duplicate; an already-terminal match takes the same one path
+(snapshot → terminal → close). The event payloads are the very replay
+contracts above (`GameEntry` / `GameReplay`) projected identically — the
+single projection SSOT feeds both surfaces — under a small envelope union
+(`LiveMatchEvent`). The one terminal event is emitted by the host
+(`MatchService`, after the outcome is folded into the record), not the
+substrate — which emits nothing on abort — so it fires once for every outcome
+(completed / forfeited / aborted / faulted) and carries the truth. The
+collected completed games are also the retained replay source, so a
+forfeited/faulted match keeps the games that finished before the break.
+Spectating is invisible on the wire: PROTOCOL.md stays at v1, engines see
+nothing.
 
 **Client shape.** `EngineClient.ServeAsync(WebSocket)` is the transport seam
 (any socket source, in-proc test servers included); `RunAsync(Uri)` wraps it
@@ -355,6 +382,18 @@ public sealed record GamePosition(IReadOnlyList<int> Board, int CubeValue, CubeO
     // [25] = seat One's bar, [0] = seat Two's bar) — stable orientation.
 public sealed record PlayMove(int From, int To);            // actor's own numbering (notation frame)
 
+// Live feed (GET /matches/{matchId}/live, text/event-stream) — one "type"-
+// discriminated envelope union; payloads reuse the replay/summary contracts.
+// No event ids / Last-Event-ID resume in v1 (see gaps): reconnect re-subscribes.
+public abstract record LiveMatchEvent;                      // "type"-discriminated:
+public sealed record LiveSnapshotEvent(int GameNumber, int SeatOneScore,        // "snapshot"
+    int SeatTwoScore, IReadOnlyList<GameEntry> Entries) : LiveMatchEvent;       //   join-in-progress
+public sealed record LiveGameStartedEvent(int GameNumber,                       // "gameStarted"
+    int SeatOneScore, int SeatTwoScore) : LiveMatchEvent;                       //   number + score, no board yet
+public sealed record LiveEntryEvent(GameEntry Entry) : LiveMatchEvent;         // "entry" (per-move increment)
+public sealed record LiveGameEndedEvent(GameReplay Game) : LiveMatchEvent;     // "gameEnded" (canonical game)
+public sealed record LiveTerminalEvent(MatchSummary Match) : LiveMatchEvent;   // "terminal" (final record, then close)
+
 // BgTournament.Server — an application, not a library: all types internal.
 // Its API is the wire protocol (PROTOCOL.md) plus the admin HTTP surface
 // (shapes: BgTournament.Api; errors carry ErrorResponse):
@@ -363,6 +402,7 @@ public sealed record PlayMove(int From, int To);            // actor's own numbe
 //   GET  /matches                          every match record, creation order
 //   GET  /matches/{matchId}                record summary (status, winner, scores, forfeit info)
 //   GET  /matches/{matchId}/games          Completed match's replay (409 otherwise)
+//   GET  /matches/{matchId}/live           text/event-stream: snapshot → per-move → terminal
 //   POST /tournaments                      {participants[], matchLength, matchesPerPairing, seed?}
 //   GET  /tournaments                      every tournament record, creation order
 //   GET  /tournaments/{tournamentId}       status, standings, winner, per-match ledger (ids
@@ -425,16 +465,25 @@ public sealed record PlayMove(int From, int To);            // actor's own numbe
   disconnects — or is kicked by a forfeit close — forfeits its remaining
   matches without play, even if it reconnects under the same name. Both sides
   gone halts the tournament as Faulted (a match can be forfeited to no one).
-- **The frame walk re-derives runner sequencing — don't "fix" it locally.**
-  `ReplayProjection` knows that a game's first transcript entry is the
-  opening play (Die1 = seat One's die, higher wins), that each play entry
-  flips the on-roll seat, and that *both* cube entries of an offer/response
-  pair are recorded in the offerer's frame. Those facts are the substrate's;
-  if a `MatchRunner` transcript change breaks the walk, the fix is to
-  re-align with (or better, land seat identity in) the substrate — booked
-  umbrella-side — never to patch attribution heuristics here. The flip
-  itself must stay a `GameState.OpponentView` round-trip: a local mirror
-  would be the system's second re-expression.
+- **Attribution is the substrate's, read not re-derived.** `ReplayProjection`
+  reads each entry's stamped `OnRollSeat` and the subtype-owned attribution
+  (`CubeTranscriptEntry.ActingSeat`, `GameEndedTranscriptEntry.Winner`) — it
+  runs no sequencing heuristic. Don't reintroduce one (opening-die winner,
+  flip-per-play, cube-no-flip): those rules now live on the entry types, and a
+  local copy would be a second source of truth. The flip normalization must
+  stay a `GameState.OpponentView` round-trip: a local mirror would be the
+  system's second re-expression. `ProjectEntry`/`ProjectGame` are the single
+  projection SSOT — the live feed reuses them, so a change is felt on both
+  surfaces at once.
+- **The live-feed observer adapter must stay non-throwing and non-blocking.**
+  `LiveMatch`'s `IMatchObserver` callbacks run synchronously on the match loop,
+  and the substrate kills the run if one throws. Keep every callback to fast
+  in-memory work under the short lock plus non-blocking channel writes — never
+  await, do I/O, or take a contended lock in a callback, and never let one
+  throw uncontained (the `SafelyObserve` wrapper logs and faults the feed
+  loudly instead). The terminal event is emitted by `MatchService`
+  (`MarkTerminal`, after the record is folded), never from the observer — an
+  aborted run gets no substrate callback at all.
 - **The admin JSON is pinned byte-for-byte, wire-style.** `ApiGoldenTests`
   is the alarm: a shape or enum-string drift in `BgTournament.Api` is a
   contract change for BgArena_Blazor. Note the Web-default encoder escapes
@@ -442,6 +491,15 @@ public sealed record PlayMove(int From, int To);            // actor's own numbe
 
 ## Subproject-internal next steps
 
+- **Live-feed resume (`Last-Event-ID`)** — a deliberate v1 gap. The SSE feed
+  sends no event ids and honors no `Last-Event-ID`: a dropped connection is
+  recovered by re-subscribing, whose fresh join-in-progress snapshot
+  re-establishes state, making replay-by-id unnecessary and its buffering
+  unjustified for now. Revisit if a consumer needs gapless reconnection.
+- **Bounded live-feed backpressure** — subscriber channels are unbounded
+  (server-to-server, one UI host, low event volume). If a stalled subscriber's
+  backlog ever matters, bound the channel with a drop policy (and `log()` the
+  drop) rather than letting it grow.
 - **`xgid` decoration** — the state schema reserves it; populate when an
   in-tree XGID formatter exists (none today).
 - **Runnable reference-bot executable** — a small console host over

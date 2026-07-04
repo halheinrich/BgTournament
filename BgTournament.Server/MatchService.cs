@@ -48,10 +48,19 @@ internal sealed class MatchRecord
     /// <summary>
     /// The substrate's full result — per-game records and transcripts —
     /// retained in memory for completed matches. Absent on forfeit: the
-    /// runner's throw discards partial state (known v1 limitation, flagged
-    /// for the umbrella). Export formats are a later arc.
+    /// runner's throw discards partial state. The games that <em>did</em>
+    /// finish before an interruption are retained on <see cref="Live"/>.
+    /// Export formats are a later arc.
     /// </summary>
     public MatchResult? Result { get; set; }
+
+    /// <summary>
+    /// The live per-move cache and SSE broadcast hub, written from the runner
+    /// flow and read by <c>GET /matches/{matchId}/live</c>. Every hosted match
+    /// has one (assigned at creation); it also retains the completed games that
+    /// feed terminal-match replay.
+    /// </summary>
+    public required LiveMatch Live { get; init; }
 
     /// <summary>
     /// Mark this match forfeited by the engine in <paramref name="seat"/>:
@@ -199,15 +208,17 @@ internal sealed class MatchService
     public MatchRecord CreateHostedMatch(
         string engineOne, string engineTwo, int matchLength, int seed, int? maxGames = null)
     {
+        var matchId = Guid.NewGuid().ToString("N");
         var record = new MatchRecord
         {
-            MatchId = Guid.NewGuid().ToString("N"),
+            MatchId = matchId,
             EngineOne = engineOne,
             EngineTwo = engineTwo,
             MatchLength = matchLength,
             MaxGames = maxGames,
             Seed = seed,
             Sequence = Interlocked.Increment(ref _sequenceSource),
+            Live = new LiveMatch(matchId, _logger),
         };
         _records[record.MatchId] = record;
         return record;
@@ -258,7 +269,7 @@ internal sealed class MatchService
 
             var result = await runner.RunMatchAsync(
                 participantOne, participantTwo, record.MatchLength, record.MaxGames,
-                cancellationToken: matchCts.Token);
+                observer: record.Live, cancellationToken: matchCts.Token);
 
             record.Result = result;
             record.SeatOneScore = result.SeatOneScore;
@@ -303,6 +314,13 @@ internal sealed class MatchService
         finally
         {
             Volatile.Write(ref matchDone, true);
+
+            // The single terminal live-feed event, for every outcome: the
+            // substrate emits none on abort (the stream just stops), so the
+            // host emits it here — after the catch blocks have folded the final
+            // status/winner/forfeit into the record, so the event carries the
+            // truth (a forfeit reads "forfeited", not "running").
+            record.Live.MarkTerminal(record.ToSummary());
 
             // Aborted/Faulted have no wire vocabulary in v1 (PROTOCOL.md §7
             // defines matchComplete/gamesCapReached/forfeit) — those matches
