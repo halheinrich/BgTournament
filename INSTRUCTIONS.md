@@ -51,6 +51,7 @@ BgTournament/
 │   ├── CubeResponseQueryMessage.cs / CubeResponseReplyMessage.cs
 │   ├── MatchStartedMessage.cs / MatchEndedMessage.cs
 │   ├── VerifiableDice.cs                 fair-dice wire SSOT: algorithm id + commit-context format
+│   ├── WireTimeControl.cs              time-control announcement shape (rides matchStarted)
 │   ├── WireGameState.cs / WireMove.cs  hand-defined wire shapes (never substrate types)
 │   ├── WireCubeOwner.cs / CubeOfferAction.cs / CubeResponseAction.cs
 │   ├── MatchEndReason.cs / ForfeitSide.cs
@@ -61,6 +62,7 @@ BgTournament/
 │   ├── MatchStatus.cs / TournamentStatus.cs    status vocabularies (Server uses them too)
 │   ├── ErrorResponse.cs                the typed error body on every non-success response
 │   ├── StartMatchRequest.cs / StartTournamentRequest.cs
+│   ├── TimeControl.cs                  validated Fischer control + its JsonException-funnel converter
 │   ├── EngineSummary.cs / MatchSummary.cs
 │   ├── StandingEntry.cs / TournamentMatchEntry.cs / TournamentSummary.cs
 │   ├── Seat.cs / CubeOwner.cs          seat-keyed identities for replay shapes
@@ -82,6 +84,7 @@ BgTournament/
 │   ├── RemoteEngineAgent.cs            IPlayAgent+ICubeAgent over the channel; taxonomy
 │   ├── PlayResolver.cs                 wire play → canonical hit-encoded candidate
 │   ├── CountingDiceSource.cs           IDiceSource wrapper counting rolls (fair-mode play-query roll index)
+│   ├── MatchClock.cs                   per-match Fischer clock over the TimeProvider seam
 │   ├── EngineRegistry.cs               sessions by name; per-engine busy flag
 │   ├── MatchService.cs                 match host: attribution, forfeits, records
 │   ├── TournamentService.cs            tournament host: claims, orchestration, folding
@@ -113,6 +116,9 @@ BgTournament/
     ├── DiceVerificationTests.cs        the pure fair-dice verifier (verify / mismatch / unknown-algo / bounds)
     ├── FairDiceLifecycleTests.cs       wire-boundary branch: seeded omits fields, fair publishes commitment
     ├── TournamentFairDiceTests.cs      unseeded tournament ⇒ per-match keys; seeded ⇒ none
+    ├── TimeControlTests.cs             the validated value type + its JsonException funnel
+    ├── MatchClockTests.cs              Fischer arithmetic, deterministic on a fake TimeProvider
+    ├── TimeControlWireTests.cs         clocks end to end: announcement, pools, flag fall, tournament fold
     ├── ListEndpointTests.cs            /matches + /tournaments listings, creation order
     ├── ReplayProjectionTests.cs        the stamped-seat projection on scripted-dice MatchRunner runs
     ├── ReplayEndpointTests.cs          /matches/{id}/games over TestServer, 404/409/partial
@@ -175,7 +181,7 @@ discarded), and closes the connection on any violation; its `Closed` task is
 the composition point for proactive disconnect handling. `RemoteEngineAgent`
 carries the forfeit taxonomy: malformed/out-of-range replies →
 `AgentContractViolationException` (decision-appropriate kind + seat, public
-ctors); timeout/disconnect → engine-name-carrying server exceptions; external
+ctors); timeout/flag fall/disconnect → engine-name-carrying server exceptions; external
 cancellation passes untranslated. `MatchService` owns what the substrate
 deliberately does not: seat↔engine attribution, the v1 forfeit policy
 (forfeit the match), the proactive disconnect watch (first connection to end
@@ -215,6 +221,32 @@ engine saw are auditable from the retained transcript, not the wire. Unseeded
 **tournaments** run each scheduled match on its own generated key; the
 scheduled seed stays structural (schedule shape) in every mode and is not the
 fair-mode dice driver. Seeded tournaments keep the SplitMix64 derivation.
+
+**Time controls (Fischer clocks).** `POST /matches`/`/tournaments` may carry
+a `timeControl` — `BgTournament.Api.TimeControl`, a constructor-validated
+immutable value (initial pool + per-decision increment, in seconds; TimeSpan
+views; a dedicated JSON converter folds constructor rejections into
+`JsonException`, so an invalid control hits the host's standard 400 funnel
+like any other malformed field instead of a binding 500). With one, the match
+runs on a per-match `MatchClock`: per-seat pools debited by the wall time the
+server measures around each decision query and credited the increment per
+answered decision — latency deliberately on the player's clock (the only
+server-authoritative measurement; PROTOCOL.md §10 says so honestly). The
+control **replaces** the flat `DecisionTimeoutSeconds` guard for that match:
+the remaining pool is the only per-decision limit, enforced by a flag
+`CancellationTokenSource` armed with the pool, so an emptied pool cancels the
+in-flight query and surfaces as `EngineFlagFallException` — the fourth
+forfeit cause, folded by `MatchService.RecordForfeit` like the others. Clock
+logic reads time exclusively through the DI `TimeProvider` (never ambient),
+which makes every clock test deterministic and pre-stages the timestamp
+source a future arbitration log will reuse. On the wire it is all additive v1
+(the fair-dice precedent): `matchStarted.timeControl` announces the control
+so engines budget the match, and every query carries both pools
+(`yourTimeRemainingSeconds`/`opponentTimeRemainingSeconds`, stamped at query
+issuance, frame-rule naming). Wire-only in v1: substrate agents and
+EngineClient-hosted agents never see the clock (SDK surfacing is a recorded
+next step). A tournament-level control governs every scheduled match, each on
+a fresh clock; a flag fall folds as an ordinary win for the non-offender.
 
 **Tournament shape.** One seam, mirrored one layer up from
 MatchRunner ↔ MatchService: `BgTournament.Core` is an execution-blind,
@@ -348,6 +380,11 @@ public abstract record ReplyMessage : ProtocolMessage  { public required string 
 //   MatchStartedMessage.DiceCommitment?, .DiceAlgorithm?   (published before roll one)
 //   MatchEndedMessage.DiceKey?                             (revealed at match end)
 //   PlayQueryMessage.RollIndex?                            (this roll's 0-based stream position)
+// Time-control additive fields (clocked matches only; omitted in the flat regime):
+//   MatchStartedMessage.TimeControl?                       (WireTimeControl, announced up front)
+//   QueryMessage.YourTimeRemainingSeconds?, .OpponentTimeRemainingSeconds?
+//                                                          (both pools, as of query issuance)
+public sealed record WireTimeControl { public required double InitialSeconds; public required double IncrementSeconds; }
 public static class VerifiableDice          // fair-dice wire SSOT
 {
     public const string AlgorithmId = "hmac-sha256-dice-v1";
@@ -437,8 +474,16 @@ public sealed class Tournament
 // Every request/response the admin surface speaks, one record per shape,
 // string enums pinned per member — consumers deserialize with Web defaults.
 public sealed record ErrorResponse(string Error);          // the body of every non-success response
-public sealed record StartMatchRequest(...);               // POST /matches
-public sealed record StartTournamentRequest(...);          // POST /tournaments
+public sealed record StartMatchRequest(...);               // POST /matches (optional TimeControl)
+public sealed record StartTournamentRequest(...);          // POST /tournaments (optional TimeControl)
+public sealed record TimeControl                            // validated Fischer control; null = flat regime
+{
+    public TimeControl(double initialSeconds, double incrementSeconds);  // finite; >0 / ≥0; TimeSpan-representable
+    public double InitialSeconds { get; }                   // wire "initialSeconds"
+    public double IncrementSeconds { get; }                 // wire "incrementSeconds"
+    public TimeSpan Initial { get; }                        // [JsonIgnore] TimeSpan views
+    public TimeSpan Increment { get; }
+}   // JSON binding via its own converter: invalid values → JsonException (the standard 400 funnel)
 public sealed record EngineSummary(...);                   // GET /engines rows
 public sealed record MatchSummary(...);                    // match endpoints' projection
 public sealed record TournamentSummary(...);               // tournament endpoints' projection
@@ -486,17 +531,18 @@ public sealed record LiveTerminalEvent(MatchSummary Match) : LiveMatchEvent;   /
 // Its API is the wire protocol (PROTOCOL.md) plus the admin HTTP surface
 // (shapes: BgTournament.Api; errors carry ErrorResponse):
 //   GET  /engines                          connected engines (name, version, author, inMatch)
-//   POST /matches                          {engineOne, engineTwo, matchLength, seed?, maxGames?}
+//   POST /matches                          {engineOne, engineTwo, matchLength, seed?, maxGames?, timeControl?}
 //   GET  /matches                          every match record, creation order
 //   GET  /matches/{matchId}                record summary (status, winner, scores, forfeit info)
 //   GET  /matches/{matchId}/games          terminal match's replay, partial if interrupted (409 while running)
 //   GET  /matches/{matchId}/live           text/event-stream: snapshot → per-move → terminal
 //   GET  /matches/{matchId}/export.mat     terminal match as Jellyfish .MAT text (attachment; 409 while running)
-//   POST /tournaments                      {participants[], matchLength, matchesPerPairing, seed?}
+//   POST /tournaments                      {participants[], matchLength, matchesPerPairing, seed?, timeControl?}
 //   GET  /tournaments                      every tournament record, creation order
 //   GET  /tournaments/{tournamentId}       status, standings, winner, per-match ledger (ids
 //                                          resolve on GET /matches/{matchId})
-// Config: Tournament:DecisionTimeoutSeconds (default 30), Tournament:HandshakeTimeoutSeconds (10).
+// Config: Tournament:DecisionTimeoutSeconds (default 30; flat regime only — a
+// timeControl replaces it), Tournament:HandshakeTimeoutSeconds (10).
 ```
 
 ## Pitfalls
@@ -574,6 +620,21 @@ public sealed record LiveTerminalEvent(MatchSummary Match) : LiveMatchEvent;   /
   home; a change breaks every external verifier and the session-1 vectors.
   `DiceCommitment.Verifies` and the context string must match byte-for-byte
   across producer and verifier or verification silently fails.
+- **A time control replaces the flat guard — don't reintroduce it.** Under a
+  `MatchClock` the remaining pool is the only per-decision limit (PROTOCOL.md
+  §10: a large pool must be spendable on one long think). `DecisionTimeoutSeconds`
+  applies solely to clock-less matches; adding a second `CancelAfter` to the
+  clocked bracket would silently change match outcomes.
+- **No ambient time in clock logic.** `MatchClock` — and anything that joins
+  it — reads time exclusively through the injected `TimeProvider`
+  (`GetTimestamp`/`GetElapsedTime`, and the flag CTS's TimeProvider
+  constructor). A `DateTime.UtcNow` or `Stopwatch` would break clock-test
+  determinism and fork the timestamp source a future arbitration log reuses.
+- **Only answered decisions earn the increment, settled exactly once.**
+  `MatchClock.Decision` debits measured time on dispose (idempotent) and
+  credits the increment only if `MarkAnswered()` ran first — a flag fall,
+  violation, disconnect, or external cancellation debits without credit. Keep
+  `MarkAnswered` after the exchange returns, never before.
 - **A tournament binds the sessions present at start.** A participant that
   disconnects — or is kicked by a forfeit close — forfeits its remaining
   matches without play, even if it reconnects under the same name. Both sides
@@ -622,7 +683,13 @@ public sealed record LiveTerminalEvent(MatchSummary Match) : LiveMatchEvent;   /
   integration-shaped today; a focused `EngineConnection` test over an in-proc
   socket pair would pin the discard-once semantics directly.
 - **Per-match timeout override** — `POST /matches` could carry an optional
-  decision timeout; global-only configuration today.
+  decision timeout; global-only configuration today. (A Fischer `timeControl`
+  already gives per-match timing; this item is about the flat regime.)
+- **SDK clock surfacing** — time controls are wire-only in v1: EngineClient
+  deserializes `matchStarted.timeControl` and the per-query pools but exposes
+  none of it, and substrate `IPlayAgent`/`ICubeAgent` carry no time parameter,
+  so hosted agents cannot budget. Surface the clock through the SDK (the
+  umbrella menu pairs this with the competitor onboarding pack).
 - **Tournament rejoin policy** — v1 binds the sessions present at start;
   re-resolving a participant by name at each scheduled match (so a
   reconnected engine plays on) is a candidate once real remote engines flake.

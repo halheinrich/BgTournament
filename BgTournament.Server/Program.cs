@@ -6,6 +6,10 @@ using BgTournament.Server;
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.Configure<TournamentOptions>(builder.Configuration.GetSection("Tournament"));
+
+// The one timestamp source for clock logic (never ambient DateTime/Stopwatch),
+// so match clocks are deterministic under test.
+builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton<EngineRegistry>();
 builder.Services.AddSingleton<MatchService>();
 builder.Services.AddSingleton<TournamentService>();
@@ -26,7 +30,8 @@ app.MapGet("/engines", (EngineRegistry registry) =>
 app.MapPost("/matches", (StartMatchRequest request, MatchService matches) =>
 {
     var (record, error, detail) = matches.StartMatch(
-        request.EngineOne, request.EngineTwo, request.MatchLength, request.Seed, request.MaxGames);
+        request.EngineOne, request.EngineTwo, request.MatchLength, request.Seed, request.MaxGames,
+        request.TimeControl);
     return error switch
     {
         StartMatchError.None => Results.Ok(record!.ToSummary()),
@@ -109,7 +114,8 @@ app.MapGet("/matches/{matchId}/live", IResult (string matchId, MatchService matc
 app.MapPost("/tournaments", (StartTournamentRequest request, TournamentService tournaments) =>
 {
     var (record, error, detail) = tournaments.StartTournament(
-        request.Participants, request.MatchLength, request.MatchesPerPairing, request.Seed);
+        request.Participants, request.MatchLength, request.MatchesPerPairing, request.Seed,
+        request.TimeControl);
     return error switch
     {
         StartTournamentError.None => Results.Ok(tournaments.Summarize(record!)),

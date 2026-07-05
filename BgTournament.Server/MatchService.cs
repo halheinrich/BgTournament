@@ -49,6 +49,14 @@ internal sealed class MatchRecord
     public DiceCommitment? Commitment => DiceKey?.Commit(VerifiableDice.ContextFor(MatchId));
 
     /// <summary>
+    /// The Fischer time control this match runs under, or null for the flat
+    /// per-decision-timeout regime. Announced on
+    /// <see cref="MatchStartedMessage"/>; the live clock state itself is match
+    /// runtime (a <see cref="MatchClock"/> scoped to the run), not record state.
+    /// </summary>
+    public TimeControl? TimeControl { get; init; }
+
+    /// <summary>
     /// Monotonic creation order, for stable listings — a concurrent
     /// dictionary has none of its own. Server-internal; never serialized.
     /// </summary>
@@ -132,6 +140,7 @@ internal sealed class MatchService
 {
     private readonly EngineRegistry _registry;
     private readonly TournamentOptions _options;
+    private readonly TimeProvider _time;
     private readonly ILogger<MatchService> _logger;
     private readonly CancellationToken _serverStopping;
     private readonly ConcurrentDictionary<string, MatchRecord> _records = new();
@@ -140,11 +149,13 @@ internal sealed class MatchService
     public MatchService(
         EngineRegistry registry,
         IOptions<TournamentOptions> options,
+        TimeProvider time,
         ILogger<MatchService> logger,
         IHostApplicationLifetime lifetime)
     {
         _registry = registry;
         _options = options.Value;
+        _time = time;
         _logger = logger;
         _serverStopping = lifetime.ApplicationStopping;
     }
@@ -162,7 +173,8 @@ internal sealed class MatchService
     /// Returns the running record, or the reason it could not start.
     /// </summary>
     public (MatchRecord? Record, StartMatchError Error, string? ErrorDetail) StartMatch(
-        string engineOne, string engineTwo, int matchLength, int? seed, int? maxGames)
+        string engineOne, string engineTwo, int matchLength, int? seed, int? maxGames,
+        TimeControl? timeControl = null)
     {
         if (matchLength < 0)
         {
@@ -211,7 +223,8 @@ internal sealed class MatchService
         // revealed at match end. A seed is still recorded either way (admin datum).
         DiceKey? diceKey = seed is null ? DiceKey.Generate() : null;
         var record = CreateHostedMatch(
-            sessionOne.Name, sessionTwo.Name, matchLength, seed ?? Random.Shared.Next(), maxGames, diceKey);
+            sessionOne.Name, sessionTwo.Name, matchLength, seed ?? Random.Shared.Next(), maxGames, diceKey,
+            timeControl);
 
         _ = Task.Run(
             async () =>
@@ -234,11 +247,13 @@ internal sealed class MatchService
     /// Create and retain a Running record for a match this service will host.
     /// The caller owns the engines' busy claims. Pass <paramref name="diceKey"/>
     /// to run the match on committed, verifiable fair-mode dice; omit it for the
-    /// explicit-seed <see cref="SeededDiceSource"/>.
+    /// explicit-seed <see cref="SeededDiceSource"/>. Pass
+    /// <paramref name="timeControl"/> to run the match on Fischer clocks; omit
+    /// it for the flat per-decision timeout.
     /// </summary>
     public MatchRecord CreateHostedMatch(
         string engineOne, string engineTwo, int matchLength, int seed, int? maxGames = null,
-        DiceKey? diceKey = null)
+        DiceKey? diceKey = null, TimeControl? timeControl = null)
     {
         var matchId = Guid.NewGuid().ToString("N");
         var record = new MatchRecord
@@ -250,6 +265,7 @@ internal sealed class MatchService
             MaxGames = maxGames,
             Seed = seed,
             DiceKey = diceKey,
+            TimeControl = timeControl,
             Sequence = Interlocked.Increment(ref _sequenceSource),
             Live = new LiveMatch(matchId, _logger),
         };
@@ -303,11 +319,20 @@ internal sealed class MatchService
                 fairMode ? new VerifiableDiceSource(record.DiceKey!) : new SeededDiceSource(record.Seed));
             Func<int>? rollsProduced = fairMode ? () => counting.RollsProduced : null;
 
+            // Time-control matches run on one shared Fischer clock (a per-seat
+            // pool pair) instead of the flat per-decision timeout; the clock is
+            // match runtime, scoped to this run.
+            MatchClock? clock = record.TimeControl is null
+                ? null
+                : new MatchClock(record.TimeControl, _time);
+
             var runner = new MatchRunner(counting);
             var participantOne = MatchParticipant.From(
-                new RemoteEngineAgent(sessionOne.Connection, MatchSeat.One, _options.DecisionTimeout, rollsProduced));
+                new RemoteEngineAgent(
+                    sessionOne.Connection, MatchSeat.One, _options.DecisionTimeout, rollsProduced, clock));
             var participantTwo = MatchParticipant.From(
-                new RemoteEngineAgent(sessionTwo.Connection, MatchSeat.Two, _options.DecisionTimeout, rollsProduced));
+                new RemoteEngineAgent(
+                    sessionTwo.Connection, MatchSeat.Two, _options.DecisionTimeout, rollsProduced, clock));
 
             var result = await runner.RunMatchAsync(
                 participantOne, participantTwo, record.MatchLength, record.MaxGames,
@@ -329,6 +354,10 @@ internal sealed class MatchService
             record.RecordForfeit(seat: ex.Seat == MatchSeat.One ? 1 : 2, ex.Message);
         }
         catch (EngineTimeoutException ex)
+        {
+            record.RecordForfeit(SeatOfEngine(record, ex.EngineName), ex.Message);
+        }
+        catch (EngineFlagFallException ex)
         {
             record.RecordForfeit(SeatOfEngine(record, ex.EngineName), ex.Message);
         }
@@ -393,6 +422,8 @@ internal sealed class MatchService
     {
         // Fair mode: publish the commitment + algorithm before the first roll.
         // Explicit-seed matches carry neither (both null ⇒ omitted on the wire).
+        // A time control is announced here so engines can budget the whole
+        // match; flat-regime matches omit it.
         await session.Connection.SendAsync(
             new MatchStartedMessage
             {
@@ -402,6 +433,13 @@ internal sealed class MatchService
                 MaxGames = record.MaxGames,
                 DiceCommitment = record.Commitment?.ToHex(),
                 DiceAlgorithm = record.DiceKey is null ? null : VerifiableDice.AlgorithmId,
+                TimeControl = record.TimeControl is null
+                    ? null
+                    : new WireTimeControl
+                    {
+                        InitialSeconds = record.TimeControl.InitialSeconds,
+                        IncrementSeconds = record.TimeControl.IncrementSeconds,
+                    },
             },
             cancellationToken);
     }

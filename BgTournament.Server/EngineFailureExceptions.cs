@@ -1,9 +1,14 @@
+using BgTournament.Api;
+
 namespace BgTournament.Server;
 
 /// <summary>
-/// An engine exceeded the per-decision timeout. One of the three forfeit
-/// causes (with contract violations and disconnects); translated to a forfeit
-/// by <see cref="MatchService"/>, attributed via <see cref="EngineName"/>.
+/// An engine exceeded the flat per-decision timeout. One of the four forfeit
+/// causes (with contract violations, disconnects, and flag falls); translated
+/// to a forfeit by <see cref="MatchService"/>, attributed via
+/// <see cref="EngineName"/>. Raised only in the flat regime — under a time
+/// control the pool is the sole limit and its exhaustion is an
+/// <see cref="EngineFlagFallException"/>.
 /// </summary>
 internal sealed class EngineTimeoutException : Exception
 {
@@ -18,8 +23,27 @@ internal sealed class EngineTimeoutException : Exception
 }
 
 /// <summary>
+/// An engine's match clock emptied mid-decision — the flag fell. The
+/// time-control counterpart of <see cref="EngineTimeoutException"/> and one of
+/// the four forfeit causes; translated to a forfeit by
+/// <see cref="MatchService"/>, attributed via <see cref="EngineName"/>.
+/// </summary>
+internal sealed class EngineFlagFallException : Exception
+{
+    /// <summary>The engine whose flag fell.</summary>
+    public string EngineName { get; }
+
+    public EngineFlagFallException(string engineName, string decision, TimeControl timeControl)
+        : base($"Engine '{engineName}' ran out of time on a {decision} query "
+            + $"(flag fall; time control {timeControl}).")
+    {
+        EngineName = engineName;
+    }
+}
+
+/// <summary>
 /// An engine's connection ended while the server needed it — mid-query, or
-/// flagged proactively while its opponent was deciding. One of the three
+/// flagged proactively while its opponent was deciding. One of the four
 /// forfeit causes; attributed via <see cref="EngineName"/>.
 /// </summary>
 internal sealed class EngineDisconnectedException : Exception

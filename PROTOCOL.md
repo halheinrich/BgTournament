@@ -247,6 +247,11 @@ carries the revealed `diceKey`:
 These fields are absent for explicit-seed matches. An engine that ignores them
 plays exactly the same — verifying the dice is optional (§8).
 
+When the match runs under a **time control**, `matchStarted` additionally
+carries `timeControl` — the Fischer clock governing the whole match — and both
+players' remaining time then rides every decision query. See §10 for the
+fields, the semantics, and the worked examples.
+
 Between `matchStarted` and `matchEnded`, expect decision queries. After
 `matchEnded` you remain registered and idle — unless you forfeited, in which
 case the server closes your connection after sending `matchEnded`.
@@ -356,8 +361,10 @@ The server forfeits an engine's match when the engine:
 - replies with a **malformed message** (invalid JSON, wrong reply type,
   unknown `requestId`, missing fields, out-of-range values),
 - sends an **unsolicited message** during a match,
-- exceeds the **per-decision timeout** (server-configured; reference default
-  30 seconds per decision), or
+- exceeds the **per-decision timeout**, in a match without a time control
+  (server-configured; reference default 30 seconds per decision),
+- empties its **match clock** mid-decision, in a time-control match — the
+  flag falls (§10), or
 - **disconnects** while in a match — even while its opponent is thinking.
 
 The forfeiting engine's opponent wins the match. Both engines are informed via
@@ -371,11 +378,61 @@ One benign race is tolerated: if your match ends while your reply is in
 flight (your opponent forfeited while you were deciding), your late reply to
 the just-abandoned query is discarded, not punished.
 
-## 10. Timing
+## 10. Timing and time controls
 
-Version 1 has no chess-style clocks. The only timing rules are the handshake
-timeout (§3) and the per-decision timeout (§9), both server-configured. Real
-time controls are planned for a future protocol version.
+Every match runs exactly one of two timing regimes. Which one is fixed when
+the match is started (an admin-side choice — engines are not consulted) and
+announced on `matchStarted`.
+
+### 10.1 The flat per-decision timeout (default)
+
+Without a time control, the only timing rules are the handshake timeout (§3)
+and the per-decision timeout (§9), both server-configured. There is no match
+clock: `matchStarted` carries no `timeControl`, and queries carry no clock
+fields.
+
+### 10.2 Fischer match clocks
+
+A match started with a time control announces it on `matchStarted`:
+
+```json
+{"type":"matchStarted","matchId":"m-3","opponent":"RandomBot","matchLength":7,"timeControl":{"initialSeconds":120,"incrementSeconds":8}}
+```
+
+Each player starts the match with a pool of `initialSeconds` on their clock.
+The pool spans the whole match — every game, every decision. Then:
+
+- **Debit.** Answering a decision query costs the wall-clock time the server
+  measures between sending you the query and receiving your reply. **Network
+  latency is on your clock**: the server's own measurement is the only
+  server-authoritative option (self-reported timings would be gameable), so
+  budget for your round trip.
+- **Credit.** Each answered decision credits your pool `incrementSeconds` —
+  the Fischer increment; play replies and cube replies alike. Unused time
+  banks: the pool may grow beyond `initialSeconds`.
+- **The flag.** If your pool empties while your decision is pending, you
+  forfeit the match (§9). Under a time control the flat per-decision timeout
+  does not apply — your remaining pool is the only limit on any single
+  decision, so a large pool may be spent on one long think.
+- **What costs nothing.** Time outside your own decisions — your opponent's
+  thinking, notifications, the gaps between games — is never on your clock.
+
+Every decision query carries both clocks, in seconds (fractions allowed), as
+of the moment the query was issued — the pending decision's own cost is not
+yet debited. As everywhere, the fields are in your frame: `yourTimeRemainingSeconds`
+is the queried player's own pool.
+
+```json
+{"type":"playQuery","requestId":"q-2","state":{"board":[0,-2,0,0,0,0,5,0,3,0,0,0,-5,5,0,0,0,-3,0,-5,0,0,0,0,2,0],"cubeValue":1,"cubeOwner":"centered","matchLength":7,"yourScore":0,"opponentScore":0,"isCrawford":false},"die1":3,"die2":1,"yourTimeRemainingSeconds":95.5,"opponentTimeRemainingSeconds":120}
+```
+
+A per-decision cap needs no separate mode: `initialSeconds` =
+`incrementSeconds` = *C* guarantees at least *C* seconds for every decision,
+with Fischer banking of whatever you do not use.
+
+All of this is additive under §2's unknown-field rule — an engine that ignores
+the fields plays identically, until its flag falls. Reading them is optional;
+the clock runs server-side regardless.
 
 ## 11. Deliberate version-1 gaps
 
@@ -391,7 +448,10 @@ versions:
 - **Forfeit scores.** On a forfeit the reported points may be `0`–`0`: the
   match is decided by the forfeit itself, and version-1 servers may not
   retain mid-match scores (§9).
-- **No time controls** beyond the two timeouts (§10).
+- **Clock arbitration.** In a time-control match (§10) the server's time
+  measurement is authoritative and unilateral: the remaining-time fields are
+  informational, and version 1 gives an engine no way to audit or dispute a
+  debit (no per-decision timing log on the wire).
 - **Dice non-selection.** Fair-mode dice (§8) prove the server did not adapt
   the rolls, but not that it did not cherry-pick a favorable committed
   sequence — v1 uses server-only entropy. Contributory nonces close this in a
@@ -405,3 +465,9 @@ versions:
     `matchStarted.diceCommitment` / `diceAlgorithm`, `matchEnded.diceKey`, and
     `playQuery.rollIndex` (§8). Additive under §2's unknown-field rule; an
     unaware engine ignores them and plays identically, so this stays version 1.
+  - *Minor addition (time controls):* optional, ignorable fields —
+    `matchStarted.timeControl` and `yourTimeRemainingSeconds` /
+    `opponentTimeRemainingSeconds` on every decision query (§10). Additive
+    under §2's unknown-field rule; an unaware engine plays identically —
+    though in a time-control match its flag can still fall, which is a
+    server-side rule, not a wire change.

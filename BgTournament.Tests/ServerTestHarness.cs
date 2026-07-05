@@ -6,9 +6,11 @@ using System.Text.Json;
 using BgGame_Lib;
 using BgInference;
 using BgMoveGen;
+using BgTournament.Api;
 using BgTournament.EngineClient;
 using BgTournament.Protocol;
 using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace BgTournament.Tests;
 
@@ -22,13 +24,21 @@ internal static class ServerHarness
         AppContext.BaseDirectory, "..", "..", "..", "..", "..",
         "BgRLEngine", "BgRLEngine", "parity", "model.onnx"));
 
-    public static WebApplicationFactory<Program> NewFactory(double? decisionTimeoutSeconds = null) =>
+    public static WebApplicationFactory<Program> NewFactory(
+        double? decisionTimeoutSeconds = null, TimeProvider? timeProvider = null) =>
         new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
         {
             if (decisionTimeoutSeconds is { } seconds)
             {
                 builder.UseSetting(
                     "Tournament:DecisionTimeoutSeconds", seconds.ToString(CultureInfo.InvariantCulture));
+            }
+
+            if (timeProvider is not null)
+            {
+                // Replace the server's timestamp source (clock logic reads time
+                // only through it), making match clocks test-controlled.
+                builder.ConfigureServices(services => services.AddSingleton(timeProvider));
             }
         });
 
@@ -144,12 +154,13 @@ internal static class ServerHarness
         string engineTwo,
         int matchLength,
         int seed,
-        int? maxGames = null)
+        int? maxGames = null,
+        TimeControl? timeControl = null)
     {
         using var http = factory.CreateClient();
         var response = await http.PostAsJsonAsync(
             "/matches",
-            new { engineOne, engineTwo, matchLength, seed, maxGames });
+            new { engineOne, engineTwo, matchLength, seed, maxGames, timeControl });
         var body = await response.Content.ReadFromJsonAsync<JsonElement>();
         Assert.True(response.IsSuccessStatusCode, $"POST /matches failed: {response.StatusCode} {body}");
         return body;
@@ -202,12 +213,13 @@ internal static class ServerHarness
         IReadOnlyList<string> participants,
         int matchLength,
         int matchesPerPairing,
-        int seed)
+        int seed,
+        TimeControl? timeControl = null)
     {
         using var http = factory.CreateClient();
         var response = await http.PostAsJsonAsync(
             "/tournaments",
-            new { participants, matchLength, matchesPerPairing, seed });
+            new { participants, matchLength, matchesPerPairing, seed, timeControl });
         var body = await response.Content.ReadFromJsonAsync<JsonElement>();
         Assert.True(response.IsSuccessStatusCode, $"POST /tournaments failed: {response.StatusCode} {body}");
         return body;

@@ -63,14 +63,26 @@ public class ApiGoldenTests
     [Fact]
     public void StartMatchRequest_Golden() =>
         AssertGolden(
-            new StartMatchRequest("Alpha", "Beta", MatchLength: 7, Seed: 42, MaxGames: 50),
-            """{"engineOne":"Alpha","engineTwo":"Beta","matchLength":7,"seed":42,"maxGames":50}""");
+            new StartMatchRequest(
+                "Alpha", "Beta", MatchLength: 7, Seed: 42, MaxGames: 50,
+                TimeControl: new TimeControl(120, 8)),
+            """{"engineOne":"Alpha","engineTwo":"Beta","matchLength":7,"seed":42,"maxGames":50,"timeControl":{"initialSeconds":120,"incrementSeconds":8}}""");
 
     [Fact]
     public void StartMatchRequest_OptionalFieldsNull() =>
         AssertGolden(
             new StartMatchRequest("Alpha", "Beta", MatchLength: 7),
-            """{"engineOne":"Alpha","engineTwo":"Beta","matchLength":7,"seed":null,"maxGames":null}""");
+            """{"engineOne":"Alpha","engineTwo":"Beta","matchLength":7,"seed":null,"maxGames":null,"timeControl":null}""");
+
+    /// <summary>
+    /// The Fischer time control: seconds as JSON numbers (fractions allowed);
+    /// the TimeSpan conveniences are computed views and stay off the wire.
+    /// </summary>
+    [Fact]
+    public void TimeControl_Golden() =>
+        AssertGolden(
+            new TimeControl(initialSeconds: 90.5, incrementSeconds: 0),
+            """{"initialSeconds":90.5,"incrementSeconds":0}""");
 
     [Fact]
     public void MatchSummary_Running() =>
@@ -103,7 +115,15 @@ public class ApiGoldenTests
     public void StartTournamentRequest_Golden() =>
         AssertGolden(
             new StartTournamentRequest(["Alpha", "Beta"], MatchLength: 3, MatchesPerPairing: 2, Seed: 7),
-            """{"participants":["Alpha","Beta"],"matchLength":3,"matchesPerPairing":2,"seed":7}""");
+            """{"participants":["Alpha","Beta"],"matchLength":3,"matchesPerPairing":2,"seed":7,"timeControl":null}""");
+
+    [Fact]
+    public void StartTournamentRequest_WithTimeControl() =>
+        AssertGolden(
+            new StartTournamentRequest(
+                ["Alpha", "Beta"], MatchLength: 3, MatchesPerPairing: 2, Seed: 7,
+                TimeControl: new TimeControl(60, 5)),
+            """{"participants":["Alpha","Beta"],"matchLength":3,"matchesPerPairing":2,"seed":7,"timeControl":{"initialSeconds":60,"incrementSeconds":5}}""");
 
     [Fact]
     public void StandingEntry_Golden() =>

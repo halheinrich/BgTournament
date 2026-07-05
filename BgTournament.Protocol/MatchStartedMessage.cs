@@ -34,4 +34,13 @@ public sealed record MatchStartedMessage : ProtocolMessage
     /// which algorithm to re-implement. Present iff <see cref="DiceCommitment"/> is.
     /// </summary>
     public string? DiceAlgorithm { get; init; }
+
+    /// <summary>
+    /// Time-control matches only: the Fischer clock governing this match (see
+    /// PROTOCOL.md §10). Present, it <em>replaces</em> the flat per-decision
+    /// timeout — a player's remaining pool is the only limit on any single
+    /// decision, and an emptied pool forfeits the match (flag fall). Omitted
+    /// when the match runs on the flat per-decision timeout instead.
+    /// </summary>
+    public WireTimeControl? TimeControl { get; init; }
 }

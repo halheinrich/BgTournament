@@ -16,4 +16,22 @@ public abstract record QueryMessage : ProtocolMessage
     /// </summary>
     [JsonPropertyOrder(-10)]
     public required string RequestId { get; init; }
+
+    /// <summary>
+    /// Time-control matches only: your remaining pool in seconds as of the
+    /// moment this query was issued — this decision's own thinking time is not
+    /// yet debited (see PROTOCOL.md §10). The server's measurement is
+    /// authoritative, and network latency is on your clock. Omitted when the
+    /// match has no time control.
+    /// </summary>
+    [JsonPropertyOrder(90)]
+    public double? YourTimeRemainingSeconds { get; init; }
+
+    /// <summary>
+    /// Time-control matches only: your opponent's remaining pool in seconds as
+    /// of the moment this query was issued. Omitted when the match has no time
+    /// control.
+    /// </summary>
+    [JsonPropertyOrder(91)]
+    public double? OpponentTimeRemainingSeconds { get; init; }
 }

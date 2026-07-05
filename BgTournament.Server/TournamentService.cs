@@ -30,12 +30,14 @@ internal enum StartTournamentError
 /// </summary>
 internal sealed class TournamentRecord
 {
-    public TournamentRecord(string tournamentId, Tournament tournament, long sequence, bool fairDice)
+    public TournamentRecord(
+        string tournamentId, Tournament tournament, long sequence, bool fairDice, TimeControl? timeControl)
     {
         TournamentId = tournamentId;
         Tournament = tournament;
         Sequence = sequence;
         FairDice = fairDice;
+        TimeControl = timeControl;
         MatchIds = new string?[tournament.Schedule.Count];
     }
 
@@ -50,6 +52,13 @@ internal sealed class TournamentRecord
     /// its own freshly generated key, so the scheduled seeds are structural, not dead.
     /// </summary>
     public bool FairDice { get; }
+
+    /// <summary>
+    /// The Fischer time control every scheduled match runs under, or null for
+    /// the flat per-decision-timeout regime. Tournament-level configuration:
+    /// each hosted match gets its own fresh clock from this one control.
+    /// </summary>
+    public TimeControl? TimeControl { get; }
 
     /// <summary>
     /// Monotonic creation order, for stable listings — a concurrent
@@ -114,7 +123,8 @@ internal sealed class TournamentService
     /// start.
     /// </summary>
     public (TournamentRecord? Record, StartTournamentError Error, string? ErrorDetail) StartTournament(
-        IReadOnlyList<string>? participants, int matchLength, int matchesPerPairing, int? seed)
+        IReadOnlyList<string>? participants, int matchLength, int matchesPerPairing, int? seed,
+        TimeControl? timeControl = null)
     {
         // The domain library is the single home of participant and format
         // validation; its rejections map to InvalidConfiguration verbatim.
@@ -166,7 +176,7 @@ internal sealed class TournamentService
         // An explicit seed keeps the reproducible SeededDiceSource (dev/repro).
         var record = new TournamentRecord(
             Guid.NewGuid().ToString("N"), tournament, Interlocked.Increment(ref _sequenceSource),
-            fairDice: seed is null);
+            fairDice: seed is null, timeControl);
         _records[record.TournamentId] = record;
 
         _ = Task.Run(() => RunTournamentAsync(record, sessions), CancellationToken.None);
@@ -263,10 +273,13 @@ internal sealed class TournamentService
                 }
 
                 // Fair mode: a fresh committed key per match (the scheduled seed
-                // stays structural). Seeded mode: the scheduled seed drives the dice.
+                // stays structural). Seeded mode: the scheduled seed drives the
+                // dice. The tournament's one time control (if any) governs every
+                // scheduled match, each on its own fresh clock.
                 var match = _matches.CreateHostedMatch(
                     scheduled.SeatOne, scheduled.SeatTwo, tournament.Format.MatchLength, scheduled.Seed,
-                    diceKey: record.FairDice ? DiceKey.Generate() : null);
+                    diceKey: record.FairDice ? DiceKey.Generate() : null,
+                    timeControl: record.TimeControl);
                 if (!oneConnected || !twoConnected)
                 {
                     // Forfeit without play: no matchStarted was ever sent, so

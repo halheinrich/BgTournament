@@ -246,6 +246,66 @@ public class GoldenWireTests
             """{"type":"playQuery","requestId":"q-1","state":{"board":[0,-2,0,0,0,0,5,0,3,0,0,0,-5,5,0,0,0,-3,0,-5,0,0,0,0,2,0],"cubeValue":1,"cubeOwner":"centered","matchLength":7,"yourScore":0,"opponentScore":0,"isCrawford":false},"die1":1,"die2":5,"rollIndex":1}""");
     }
 
+    /// <summary>
+    /// Time control: matchStarted announces the match's Fischer clock
+    /// (PROTOCOL.md §10) so an engine can budget the whole match.
+    /// </summary>
+    [Fact]
+    public void MatchStarted_TimeControl_AnnouncesTheClock()
+    {
+        var message = new MatchStartedMessage
+        {
+            MatchId = "m-3",
+            Opponent = "RandomBot",
+            MatchLength = 7,
+            TimeControl = new WireTimeControl { InitialSeconds = 120, IncrementSeconds = 8 },
+        };
+        AssertGolden(
+            message,
+            """{"type":"matchStarted","matchId":"m-3","opponent":"RandomBot","matchLength":7,"timeControl":{"initialSeconds":120,"incrementSeconds":8}}""");
+    }
+
+    /// <summary>
+    /// Time control: every decision query carries both remaining pools as of
+    /// query issuance, after the regular fields (fractional seconds allowed).
+    /// This is the worked example from PROTOCOL.md §10.
+    /// </summary>
+    [Fact]
+    public void PlayQuery_TimeControl_CarriesBothClocks()
+    {
+        var message = new PlayQueryMessage
+        {
+            RequestId = "q-2",
+            State = OpeningState(matchLength: 7, yourScore: 0, opponentScore: 0),
+            Die1 = 3,
+            Die2 = 1,
+            YourTimeRemainingSeconds = 95.5,
+            OpponentTimeRemainingSeconds = 120,
+        };
+        AssertGolden(
+            message,
+            """{"type":"playQuery","requestId":"q-2","state":{"board":[0,-2,0,0,0,0,5,0,3,0,0,0,-5,5,0,0,0,-3,0,-5,0,0,0,0,2,0],"cubeValue":1,"cubeOwner":"centered","matchLength":7,"yourScore":0,"opponentScore":0,"isCrawford":false},"die1":3,"die2":1,"yourTimeRemainingSeconds":95.5,"opponentTimeRemainingSeconds":120}""");
+    }
+
+    /// <summary>
+    /// Time control: the clock fields ride cube queries too — they belong to
+    /// the query base, not to the play query.
+    /// </summary>
+    [Fact]
+    public void CubeOfferQuery_TimeControl_CarriesBothClocks()
+    {
+        var message = new CubeOfferQueryMessage
+        {
+            RequestId = "q-44",
+            State = OpeningState(matchLength: 7, yourScore: 3, opponentScore: 2),
+            YourTimeRemainingSeconds = 60,
+            OpponentTimeRemainingSeconds = 65.5,
+        };
+        AssertGolden(
+            message,
+            """{"type":"cubeOfferQuery","requestId":"q-44","state":{"board":[0,-2,0,0,0,0,5,0,3,0,0,0,-5,5,0,0,0,-3,0,-5,0,0,0,0,2,0],"cubeValue":1,"cubeOwner":"centered","matchLength":7,"yourScore":3,"opponentScore":2,"isCrawford":false},"yourTimeRemainingSeconds":60,"opponentTimeRemainingSeconds":65.5}""");
+    }
+
     [Fact]
     public void MatchEnded_MatchComplete()
     {
