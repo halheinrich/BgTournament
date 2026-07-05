@@ -2,19 +2,29 @@ using System.Runtime.CompilerServices;
 using System.Text;
 using BgTournament.Api;
 using BgTournament.Server;
+using BgTournament.Server.Persistence;
 
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.Configure<TournamentOptions>(builder.Configuration.GetSection("Tournament"));
+builder.Services.Configure<PersistenceOptions>(builder.Configuration.GetSection("Persistence"));
 
-// The one timestamp source for clock logic (never ambient DateTime/Stopwatch),
-// so match clocks are deterministic under test.
+// The one timestamp source for clock logic and journal timestamps (never
+// ambient DateTime/Stopwatch), so both are deterministic under test.
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton<EngineRegistry>();
+builder.Services.AddSingleton<IJournalStore, FileJournalStore>();
 builder.Services.AddSingleton<MatchService>();
 builder.Services.AddSingleton<TournamentService>();
+builder.Services.AddSingleton<JournalRehydrator>();
 
 var app = builder.Build();
+
+// Fold the durable journals back into records before any endpoint serves:
+// every match and tournament the server ever hosted is queryable from the
+// first request, and an orphaned Running journal (the server died under it)
+// folds to an Interrupted terminal record with all evidence intact.
+await app.Services.GetRequiredService<JournalRehydrator>().RehydrateAsync();
 
 app.UseWebSockets();
 

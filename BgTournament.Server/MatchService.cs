@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using BgGame_Lib;
 using BgTournament.Api;
 using BgTournament.Protocol;
+using BgTournament.Server.Persistence;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -59,8 +60,23 @@ internal sealed class MatchRecord
     /// <summary>
     /// Monotonic creation order, for stable listings — a concurrent
     /// dictionary has none of its own. Server-internal; never serialized.
+    /// Rehydrated records are re-sequenced by journal creation time, so the
+    /// order survives restarts.
     /// </summary>
     public required long Sequence { get; init; }
+
+    /// <summary>
+    /// When the server created and began hosting the match (UTC, via the DI
+    /// <see cref="TimeProvider"/>).
+    /// </summary>
+    public required DateTimeOffset StartedAtUtc { get; init; }
+
+    /// <summary>
+    /// When the match reached its terminal status (UTC); null while running —
+    /// and null on an <see cref="MatchStatus.Interrupted"/> record, whose
+    /// true end time died with the server.
+    /// </summary>
+    public DateTimeOffset? EndedAtUtc { get; set; }
 
     public MatchStatus Status { get; set; } = MatchStatus.Running;
 
@@ -73,6 +89,13 @@ internal sealed class MatchRecord
 
     /// <summary>Forfeiting engine's name; null unless <see cref="Status"/> is Forfeited.</summary>
     public string? ForfeitedBy { get; set; }
+
+    /// <summary>
+    /// The structured forfeit taxonomy; null unless <see cref="Status"/> is
+    /// Forfeited. Journaled so the durable audit record carries structure —
+    /// <see cref="Detail"/> stays the human-readable surface.
+    /// </summary>
+    public ForfeitCause? ForfeitCause { get; set; }
 
     /// <summary>Human-readable outcome detail (forfeit cause, abort reason).</summary>
     public string? Detail { get; set; }
@@ -95,14 +118,23 @@ internal sealed class MatchRecord
     public required LiveMatch Live { get; init; }
 
     /// <summary>
+    /// The durable write-through journal riding the same observer flow as
+    /// <see cref="Live"/>. Null only on a rehydrated record, whose journal is
+    /// already complete on disk (rehydrated records are terminal and never
+    /// write another event).
+    /// </summary>
+    public MatchJournal? Journal { get; init; }
+
+    /// <summary>
     /// Mark this match forfeited by the engine in <paramref name="seat"/>:
     /// the opponent wins the match outright.
     /// </summary>
-    public void RecordForfeit(int seat, string detail)
+    public void RecordForfeit(int seat, ForfeitCause cause, string detail)
     {
         Status = MatchStatus.Forfeited;
         ForfeitedBy = seat == 1 ? EngineOne : EngineTwo;
         Winner = seat == 1 ? EngineTwo : EngineOne;
+        ForfeitCause = cause;
         Detail = detail;
     }
 }
@@ -141,6 +173,7 @@ internal sealed class MatchService
     private readonly EngineRegistry _registry;
     private readonly TournamentOptions _options;
     private readonly TimeProvider _time;
+    private readonly IJournalStore _store;
     private readonly ILogger<MatchService> _logger;
     private readonly CancellationToken _serverStopping;
     private readonly ConcurrentDictionary<string, MatchRecord> _records = new();
@@ -150,12 +183,14 @@ internal sealed class MatchService
         EngineRegistry registry,
         IOptions<TournamentOptions> options,
         TimeProvider time,
+        IJournalStore store,
         ILogger<MatchService> logger,
         IHostApplicationLifetime lifetime)
     {
         _registry = registry;
         _options = options.Value;
         _time = time;
+        _store = store;
         _logger = logger;
         _serverStopping = lifetime.ApplicationStopping;
     }
@@ -163,6 +198,20 @@ internal sealed class MatchService
     /// <summary>Fetch a match record by id.</summary>
     public bool TryGetRecord(string matchId, out MatchRecord record) =>
         _records.TryGetValue(matchId, out record!);
+
+    /// <summary>
+    /// Adopt rehydrated (terminal, journal-complete) records at startup,
+    /// before the endpoints serve. The records arrive already sequenced by
+    /// journal creation time; new matches sequence after them.
+    /// </summary>
+    public void Restore(IReadOnlyList<MatchRecord> records)
+    {
+        foreach (var record in records)
+        {
+            _records[record.MatchId] = record;
+            _sequenceSource = Math.Max(_sequenceSource, record.Sequence);
+        }
+    }
 
     /// <summary>All match records in creation order — the stable listing.</summary>
     public IReadOnlyList<MatchRecord> ListRecords() =>
@@ -267,10 +316,33 @@ internal sealed class MatchService
             DiceKey = diceKey,
             TimeControl = timeControl,
             Sequence = Interlocked.Increment(ref _sequenceSource),
+            StartedAtUtc = _time.GetUtcNow(),
             Live = new LiveMatch(matchId, _logger),
+            Journal = MatchJournal.Create(_store, matchId, _time, _logger),
         };
+
+        // The journal header is the record's durable identity — written first,
+        // before anything can happen to the match.
+        record.Journal!.RecordCreated(record);
         _records[record.MatchId] = record;
         return record;
+    }
+
+    /// <summary>
+    /// Fold the terminal outcome of a match that never ran (a tournament
+    /// forfeit-without-play) into its live feed and journal — the counterpart
+    /// of <see cref="RunHostedMatchAsync"/>'s finally for the no-play path.
+    /// The caller has already recorded the forfeit on the record.
+    /// </summary>
+    public async Task FinalizeUnplayedMatchAsync(MatchRecord record)
+    {
+        record.EndedAtUtc = _time.GetUtcNow();
+        record.Live.MarkTerminal(record.ToSummary());
+        if (record.Journal is { } journal)
+        {
+            journal.RecordTerminal(record);
+            await journal.CompleteAsync();
+        }
     }
 
     /// <summary>
@@ -307,6 +379,7 @@ internal sealed class MatchService
 
         try
         {
+            record.Journal?.RecordStarted();
             await NotifyStartedAsync(record, sessionOne, opponent: sessionTwo.Name, matchCts.Token);
             await NotifyStartedAsync(record, sessionTwo, opponent: sessionOne.Name, matchCts.Token);
 
@@ -334,9 +407,15 @@ internal sealed class MatchService
                 new RemoteEngineAgent(
                     sessionTwo.Connection, MatchSeat.Two, _options.DecisionTimeout, rollsProduced, clock));
 
+            // The live feed and the journal are sibling consumers of the same
+            // observer flow — both non-blocking and non-throwing by construction.
+            IMatchObserver observer = record.Journal is { } journal
+                ? new CompositeMatchObserver(record.Live, journal)
+                : record.Live;
+
             var result = await runner.RunMatchAsync(
                 participantOne, participantTwo, record.MatchLength, record.MaxGames,
-                observer: record.Live, cancellationToken: matchCts.Token);
+                observer: observer, cancellationToken: matchCts.Token);
 
             record.Result = result;
             record.SeatOneScore = result.SeatOneScore;
@@ -351,25 +430,26 @@ internal sealed class MatchService
         }
         catch (AgentContractViolationException ex)
         {
-            record.RecordForfeit(seat: ex.Seat == MatchSeat.One ? 1 : 2, ex.Message);
+            record.RecordForfeit(
+                seat: ex.Seat == MatchSeat.One ? 1 : 2, ForfeitCause.ContractViolation, ex.Message);
         }
         catch (EngineTimeoutException ex)
         {
-            record.RecordForfeit(SeatOfEngine(record, ex.EngineName), ex.Message);
+            record.RecordForfeit(SeatOfEngine(record, ex.EngineName), ForfeitCause.Timeout, ex.Message);
         }
         catch (EngineFlagFallException ex)
         {
-            record.RecordForfeit(SeatOfEngine(record, ex.EngineName), ex.Message);
+            record.RecordForfeit(SeatOfEngine(record, ex.EngineName), ForfeitCause.FlagFall, ex.Message);
         }
         catch (EngineDisconnectedException ex)
         {
-            record.RecordForfeit(SeatOfEngine(record, ex.EngineName), ex.Message);
+            record.RecordForfeit(SeatOfEngine(record, ex.EngineName), ForfeitCause.Disconnect, ex.Message);
         }
         catch (OperationCanceledException) when (Volatile.Read(ref disconnectedSeat) != 0)
         {
             int seat = Volatile.Read(ref disconnectedSeat);
             string name = seat == 1 ? record.EngineOne : record.EngineTwo;
-            record.RecordForfeit(seat, $"Engine '{name}' disconnected mid-match.");
+            record.RecordForfeit(seat, ForfeitCause.Disconnect, $"Engine '{name}' disconnected mid-match.");
         }
         catch (OperationCanceledException)
         {
@@ -385,6 +465,7 @@ internal sealed class MatchService
         finally
         {
             Volatile.Write(ref matchDone, true);
+            record.EndedAtUtc = _time.GetUtcNow();
 
             // The single terminal live-feed event, for every outcome: the
             // substrate emits none on abort (the stream just stops), so the
@@ -392,6 +473,17 @@ internal sealed class MatchService
             // status/winner/forfeit into the record, so the event carries the
             // truth (a forfeit reads "forfeited", not "running").
             record.Live.MarkTerminal(record.ToSummary());
+
+            // The journal's terminal event mirrors it, then the journal drains
+            // and closes. Awaiting the flush here delays nothing that matters:
+            // the match is over, and the busy flags release after this method
+            // regardless. A process killed mid-drain folds honestly as
+            // Interrupted on the next start.
+            if (record.Journal is { } terminalJournal)
+            {
+                terminalJournal.RecordTerminal(record);
+                await terminalJournal.CompleteAsync();
+            }
 
             // Aborted/Faulted have no wire vocabulary in v1 (PROTOCOL.md §7
             // defines matchComplete/gamesCapReached/forfeit) — those matches

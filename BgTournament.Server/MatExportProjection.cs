@@ -66,6 +66,14 @@ internal static class MatExportProjection
                 RetainedGames(record), record.Live.PartialTranscript,
                 "Match faulted: internal server error", tags),
 
+            // A rehydrated orphan: the server died mid-match. Winner-less like
+            // the other abandonments; the journal retained the finished games
+            // and the trailing partial the export carries.
+            MatchStatus.Interrupted => MatchExport.ForAbandoned(
+                record.MatchLength, record.EngineOne, record.EngineTwo,
+                RetainedGames(record), record.Live.PartialTranscript,
+                "Match interrupted: the server was terminated while it ran", tags),
+
             _ => throw new InvalidOperationException(
                 $"Match '{record.MatchId}' is {record.Status}; only terminal matches export "
                     + "(the endpoint gates out running matches)."),

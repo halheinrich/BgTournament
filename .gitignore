@@ -2,6 +2,9 @@
 bin/
 obj/
 
+## Runtime data (the durable record journals; Persistence:DataDirectory default)
+BgTournament.Server/data/
+
 ## Visual Studio
 .vs/
 *.user

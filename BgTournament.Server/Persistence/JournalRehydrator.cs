@@ -1,0 +1,428 @@
+using System.Text;
+using System.Text.Json;
+using BgGame_Lib;
+using BgTournament.Api;
+using BgTournament.Core;
+using Microsoft.Extensions.Logging;
+
+namespace BgTournament.Server.Persistence;
+
+/// <summary>
+/// The startup fold: reads every journal in the store and rebuilds the match
+/// and tournament records before any endpoint serves. The match fold replays
+/// the journaled entries through a fresh <see cref="LiveMatch"/> via its own
+/// <c>IMatchObserver</c> callbacks — the exact reverse of the write path, so
+/// retained games, the trailing partial transcript, replay, and the
+/// <c>.MAT</c> export come back identical with no second fold implementation.
+///
+/// <para><b>Damage policy.</b> A journal that cannot be trusted end-to-end is
+/// folded to its trusted prefix, never poisoned:
+/// a final line that fails to parse is a <em>torn tail</em> (a crash
+/// mid-append) — dropped with a warning; a failure on any earlier line is
+/// <em>corruption</em> — folding stops there, loudly, and the record says so
+/// in its detail. A journal without a (trusted) terminal event folds to
+/// <c>Interrupted</c> — evidence intact, including the escrowed fair-mode
+/// dice key, with a null end time (the true one died with the server). A
+/// file whose header is unreadable or carries an unknown schema version is
+/// skipped whole, loudly — there is no identity to build a record from.</para>
+///
+/// <para>Restart ordering: records re-sequence by header timestamp, with an
+/// ordinal-id tiebreak so equal stamps (test clocks) stay deterministic.</para>
+/// </summary>
+internal sealed class JournalRehydrator
+{
+    private readonly IJournalStore _store;
+    private readonly MatchService _matches;
+    private readonly TournamentService _tournaments;
+    private readonly ILogger<JournalRehydrator> _logger;
+
+    public JournalRehydrator(
+        IJournalStore store,
+        MatchService matches,
+        TournamentService tournaments,
+        ILogger<JournalRehydrator> logger)
+    {
+        _store = store;
+        _matches = matches;
+        _tournaments = tournaments;
+        _logger = logger;
+    }
+
+    /// <summary>Fold every stored journal into the services' records. Call once, before serving.</summary>
+    public async Task RehydrateAsync()
+    {
+        var matchRecords = await RehydrateKindAsync(
+            JournalKind.Match, JournalCodec.DeserializeMatchEvent, ReadMatchHeader, FoldMatch);
+        _matches.Restore(matchRecords);
+
+        var tournamentRecords = await RehydrateKindAsync(
+            JournalKind.Tournament, JournalCodec.DeserializeTournamentEvent, ReadTournamentHeader,
+            FoldTournament);
+        _tournaments.Restore(tournamentRecords);
+
+        if (matchRecords.Count > 0 || tournamentRecords.Count > 0)
+        {
+            _logger.LogInformation(
+                "Rehydrated {MatchCount} match record(s) and {TournamentCount} tournament record(s) "
+                    + "from the journal store.",
+                matchRecords.Count, tournamentRecords.Count);
+        }
+    }
+
+    /// <summary>
+    /// One kind's full pass: parse every journal, order by header timestamp
+    /// (ordinal-id tiebreak), and fold each with its restart sequence number.
+    /// </summary>
+    private async Task<IReadOnlyList<TRecord>> RehydrateKindAsync<TEvent, THeader, TRecord>(
+        JournalKind kind,
+        Func<string, TEvent> deserialize,
+        Func<string, IReadOnlyList<TEvent>, (THeader Header, DateTimeOffset At)?> readHeader,
+        Func<THeader, IReadOnlyList<TEvent>, string?, long, TRecord?> fold)
+        where TEvent : class
+        where THeader : class
+        where TRecord : class
+    {
+        var parsed = new List<(string Id, THeader Header, DateTimeOffset At,
+            IReadOnlyList<TEvent> Events, string? CorruptionDetail)>();
+
+        foreach (string id in _store.ListJournalIds(kind))
+        {
+            var journal = await ParseJournalAsync(kind, id, deserialize);
+            if (journal is not { } trusted)
+            {
+                continue;
+            }
+
+            if (readHeader(id, trusted.Events) is not { } header)
+            {
+                continue;
+            }
+
+            parsed.Add((id, header.Header, header.At, trusted.Events, trusted.CorruptionDetail));
+        }
+
+        // Creation order across restarts: header timestamp, then ordinal id —
+        // deterministic even when a test clock stamps every journal identically.
+        parsed.Sort((a, b) => a.At != b.At
+            ? a.At.CompareTo(b.At)
+            : string.CompareOrdinal(a.Id, b.Id));
+
+        var records = new List<TRecord>(parsed.Count);
+        foreach (var journal in parsed)
+        {
+            try
+            {
+                if (fold(journal.Header, journal.Events, journal.CorruptionDetail,
+                        records.Count + 1) is { } record)
+                {
+                    records.Add(record);
+                }
+            }
+            catch (Exception ex) when (ex is not OutOfMemoryException)
+            {
+                _logger.LogError(
+                    ex, "Could not fold the {Kind} journal '{Id}'; skipping it.", kind, journal.Id);
+            }
+        }
+
+        return records;
+    }
+
+    /// <summary>
+    /// Read one journal into its trusted event prefix, applying the damage
+    /// policy: torn tail dropped with a warning, mid-file corruption cuts the
+    /// fold there with a corruption detail. Null when the file cannot be read
+    /// at all.
+    /// </summary>
+    private async Task<(IReadOnlyList<TEvent> Events, string? CorruptionDetail)?>
+        ParseJournalAsync<TEvent>(JournalKind kind, string id, Func<string, TEvent> deserialize)
+        where TEvent : class
+    {
+        List<string> lines = [];
+        try
+        {
+            using var reader = new StreamReader(_store.OpenJournal(kind, id), Encoding.UTF8);
+            while (await reader.ReadLineAsync() is { } line)
+            {
+                lines.Add(line);
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            _logger.LogError(
+                ex, "Could not read the {Kind} journal '{Id}'; skipping it.", kind, id);
+            return null;
+        }
+
+        var events = new List<TEvent>(lines.Count);
+        string? corruptionDetail = null;
+        for (int i = 0; i < lines.Count; i++)
+        {
+            try
+            {
+                events.Add(deserialize(lines[i]));
+            }
+            catch (JsonException ex)
+            {
+                if (i == lines.Count - 1)
+                {
+                    // A crash mid-append leaves a torn final line; dropping it
+                    // is the settled policy — the events before it are whole.
+                    _logger.LogWarning(
+                        ex,
+                        "The {Kind} journal '{Id}' has a torn final line ({Line}); dropped it and "
+                            + "folded the rest.",
+                        kind, id, i + 1);
+                }
+                else
+                {
+                    corruptionDetail =
+                        $"The journal is corrupt at line {i + 1}; this record reflects only the "
+                            + "events before the corruption.";
+                    _logger.LogError(
+                        ex,
+                        "The {Kind} journal '{Id}' is corrupt at line {Line} (not the tail); folding "
+                            + "only the events before it.",
+                        kind, id, i + 1);
+                }
+
+                break;
+            }
+        }
+
+        return (events, corruptionDetail);
+    }
+
+    private (MatchCreatedEvent Header, DateTimeOffset At)? ReadMatchHeader(
+        string id, IReadOnlyList<MatchJournalEvent> events) =>
+        ReadHeader<MatchJournalEvent, MatchCreatedEvent>(
+            JournalKind.Match, id, events, header => header.SchemaVersion);
+
+    private (TournamentCreatedEvent Header, DateTimeOffset At)? ReadTournamentHeader(
+        string id, IReadOnlyList<TournamentJournalEvent> events) =>
+        ReadHeader<TournamentJournalEvent, TournamentCreatedEvent>(
+            JournalKind.Tournament, id, events, header => header.SchemaVersion);
+
+    /// <summary>
+    /// Validate the header contract: line 1 is the created event, carrying a
+    /// schema version this server knows. Anything else has no identity to
+    /// build a record from — skip the file, loudly.
+    /// </summary>
+    private (THeader Header, DateTimeOffset At)? ReadHeader<TEvent, THeader>(
+        JournalKind kind, string id, IReadOnlyList<TEvent> events, Func<THeader, int> schemaVersion)
+        where TEvent : class
+        where THeader : TEvent
+    {
+        if (events.Count == 0)
+        {
+            _logger.LogWarning(
+                "The {Kind} journal '{Id}' has no readable events; skipping it.", kind, id);
+            return null;
+        }
+
+        if (events[0] is not THeader header)
+        {
+            _logger.LogError(
+                "The {Kind} journal '{Id}' does not begin with a created header; skipping it.",
+                kind, id);
+            return null;
+        }
+
+        if (schemaVersion(header) != JournalCodec.SchemaVersion)
+        {
+            _logger.LogError(
+                "The {Kind} journal '{Id}' carries schema version {Version}, which this server does "
+                    + "not know (it writes {Known}); skipping it.",
+                kind, id, schemaVersion(header), JournalCodec.SchemaVersion);
+            return null;
+        }
+
+        return (header, HeaderAt(header));
+    }
+
+    private static DateTimeOffset HeaderAt<THeader>(THeader header) => header switch
+    {
+        MatchCreatedEvent match => match.At,
+        TournamentCreatedEvent tournament => tournament.At,
+        _ => throw new InvalidOperationException($"Unhandled header type: {header!.GetType().Name}."),
+    };
+
+    /// <summary>
+    /// Fold one match journal's trusted events into a terminal record —
+    /// entries replayed through a fresh <see cref="LiveMatch"/>, games
+    /// rebuilt from the stamped facts on each game-ended entry.
+    /// </summary>
+    private MatchRecord FoldMatch(
+        MatchCreatedEvent header, IReadOnlyList<MatchJournalEvent> events, string? corruptionDetail,
+        long sequence)
+    {
+        var live = new LiveMatch(header.MatchId, _logger);
+        var record = new MatchRecord
+        {
+            MatchId = header.MatchId,
+            EngineOne = header.EngineOne,
+            EngineTwo = header.EngineTwo,
+            MatchLength = header.MatchLength,
+            MaxGames = header.MaxGames,
+            Seed = header.Seed,
+            DiceKey = header.DiceKey is null ? null : DiceKey.FromHex(header.DiceKey),
+            TimeControl = JournalMapping.ToTimeControl(header.TimeControl),
+            Sequence = sequence,
+            StartedAtUtc = header.At,
+            Live = live,
+            Journal = null,   // the journal on disk is this record's complete history
+        };
+
+        var games = new List<GameRecord>();
+        Transcript? currentGame = null;
+        MatchTerminalEvent? terminal = null;
+
+        foreach (var journalEvent in events.Skip(1))
+        {
+            switch (journalEvent)
+            {
+                case MatchStartedEvent:
+                    break;
+
+                case MatchGameStartedEvent gameStarted:
+                    live.OnGameStarted(JournalMapping.ToGameStartContext(gameStarted));
+                    currentGame = new Transcript();
+                    break;
+
+                case MatchPlayEvent or MatchCubeEvent:
+                    var entry = JournalMapping.ToTranscriptEntry(journalEvent);
+                    live.OnEntryRecorded(entry);
+                    currentGame?.Append(entry);
+                    break;
+
+                case MatchGameEndedEvent gameEnded:
+                    // The game's record is derived exactly as the substrate
+                    // derives it: winner and result read off the terminating
+                    // entry's stamped facts, transcript = the accumulated
+                    // entries. (LiveMatch deliberately ignores the terminating
+                    // entry in OnEntryRecorded, so it is not forwarded.)
+                    var end = (GameEndedTranscriptEntry)JournalMapping.ToTranscriptEntry(gameEnded);
+                    if (currentGame is not null)
+                    {
+                        currentGame.Append(end);
+                        var game = new GameRecord(end.Winner, end.Result, currentGame);
+                        games.Add(game);
+                        live.OnGameEnded(games.Count, game);
+                        currentGame = null;
+                    }
+
+                    break;
+
+                case MatchTerminalEvent terminalEvent:
+                    terminal = terminalEvent;
+                    break;
+
+                default:
+                    throw new InvalidOperationException(
+                        $"Unhandled match journal event: {journalEvent.GetType().Name}.");
+            }
+        }
+
+        if (terminal is not null && corruptionDetail is null)
+        {
+            record.Status = JournalMapping.ToMatchStatus(terminal.Status);
+            record.Winner = terminal.Winner;
+            record.SeatOneScore = terminal.SeatOneScore;
+            record.SeatTwoScore = terminal.SeatTwoScore;
+            record.ForfeitedBy = terminal.ForfeitedBy;
+            record.ForfeitCause =
+                terminal.ForfeitCause is { } cause ? JournalMapping.ToForfeitCause(cause) : null;
+            record.Detail = terminal.Detail;
+            record.EndedAtUtc = terminal.At;
+
+            if (record.Status == MatchStatus.Completed)
+            {
+                MatchSeat? winnerSeat = terminal.Winner is null
+                    ? null
+                    : terminal.Winner == record.EngineOne ? MatchSeat.One : MatchSeat.Two;
+                record.Result = new MatchResult(
+                    winnerSeat, terminal.SeatOneScore ?? 0, terminal.SeatTwoScore ?? 0, games);
+            }
+        }
+        else
+        {
+            // No trusted terminal event: the server died under this match.
+            // All evidence is retained — the completed games, the trailing
+            // partial transcript, and (fair mode) the escrowed dice key, so
+            // the partial roll stream stays verifiable. EndedAtUtc stays
+            // null: the true end time died with the server.
+            record.Status = MatchStatus.Interrupted;
+            record.Detail = corruptionDetail
+                ?? "The server was interrupted while this match was running; the record was "
+                    + "reconstructed from its journal.";
+        }
+
+        live.MarkTerminal(record.ToSummary());
+        return record;
+    }
+
+    /// <summary>
+    /// Fold one tournament journal's trusted events into a terminal record.
+    /// The schedule is re-derived by the <see cref="Tournament"/> constructor
+    /// — participants + format + seed are the durable facts; the seed
+    /// derivation is a pinned reproducibility (and now durable-format)
+    /// contract.
+    /// </summary>
+    private TournamentRecord FoldTournament(
+        TournamentCreatedEvent header, IReadOnlyList<TournamentJournalEvent> events,
+        string? corruptionDetail, long sequence)
+    {
+        var tournament = new Tournament(
+            header.Participants,
+            new TournamentFormat(header.MatchLength, header.MatchesPerPairing),
+            header.Seed);
+        var record = new TournamentRecord(
+            header.TournamentId, tournament, sequence, header.FairDice,
+            JournalMapping.ToTimeControl(header.TimeControl), header.At,
+            journal: null);
+
+        TournamentTerminalEvent? terminal = null;
+        foreach (var journalEvent in events.Skip(1))
+        {
+            switch (journalEvent)
+            {
+                case TournamentMatchStartedEvent matchStarted:
+                    if (matchStarted.MatchIndex >= 0
+                        && matchStarted.MatchIndex < record.MatchIds.Length)
+                    {
+                        record.MatchIds[matchStarted.MatchIndex] = matchStarted.MatchId;
+                    }
+
+                    break;
+
+                case TournamentResultEvent result:
+                    tournament.RecordResult(result.MatchIndex, result.Winner);
+                    break;
+
+                case TournamentTerminalEvent terminalEvent:
+                    terminal = terminalEvent;
+                    break;
+
+                default:
+                    throw new InvalidOperationException(
+                        $"Unhandled tournament journal event: {journalEvent.GetType().Name}.");
+            }
+        }
+
+        if (terminal is not null && corruptionDetail is null)
+        {
+            record.Status = JournalMapping.ToTournamentStatus(terminal.Status);
+            record.Detail = terminal.Detail;
+            record.EndedAtUtc = terminal.At;
+        }
+        else
+        {
+            record.Status = TournamentStatus.Interrupted;
+            record.Detail = corruptionDetail
+                ?? "The server was interrupted while this tournament was running; the record was "
+                    + "reconstructed from its journal.";
+        }
+
+        return record;
+    }
+}

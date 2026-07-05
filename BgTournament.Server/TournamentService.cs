@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using BgGame_Lib;
 using BgTournament.Api;
 using BgTournament.Core;
+using BgTournament.Server.Persistence;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
@@ -31,17 +32,39 @@ internal enum StartTournamentError
 internal sealed class TournamentRecord
 {
     public TournamentRecord(
-        string tournamentId, Tournament tournament, long sequence, bool fairDice, TimeControl? timeControl)
+        string tournamentId, Tournament tournament, long sequence, bool fairDice,
+        TimeControl? timeControl, DateTimeOffset startedAtUtc, TournamentJournal? journal)
     {
         TournamentId = tournamentId;
         Tournament = tournament;
         Sequence = sequence;
         FairDice = fairDice;
         TimeControl = timeControl;
+        StartedAtUtc = startedAtUtc;
+        Journal = journal;
         MatchIds = new string?[tournament.Schedule.Count];
     }
 
     public string TournamentId { get; }
+
+    /// <summary>
+    /// When the server created and began hosting the tournament (UTC, via the
+    /// DI <see cref="TimeProvider"/>).
+    /// </summary>
+    public DateTimeOffset StartedAtUtc { get; }
+
+    /// <summary>
+    /// When the tournament reached its terminal status (UTC); null while
+    /// running — and null on an <see cref="TournamentStatus.Interrupted"/>
+    /// record, whose true end time died with the server.
+    /// </summary>
+    public DateTimeOffset? EndedAtUtc { get; set; }
+
+    /// <summary>
+    /// The durable write-through journal. Null only on a rehydrated record,
+    /// whose journal is already complete on disk.
+    /// </summary>
+    public TournamentJournal? Journal { get; }
 
     /// <summary>
     /// Whether the tournament's matches run on fair-mode (committed, verifiable)
@@ -100,6 +123,8 @@ internal sealed class TournamentService
 {
     private readonly EngineRegistry _registry;
     private readonly MatchService _matches;
+    private readonly TimeProvider _time;
+    private readonly IJournalStore _store;
     private readonly ILogger<TournamentService> _logger;
     private readonly CancellationToken _serverStopping;
     private readonly ConcurrentDictionary<string, TournamentRecord> _records = new();
@@ -108,13 +133,31 @@ internal sealed class TournamentService
     public TournamentService(
         EngineRegistry registry,
         MatchService matches,
+        TimeProvider time,
+        IJournalStore store,
         ILogger<TournamentService> logger,
         IHostApplicationLifetime lifetime)
     {
         _registry = registry;
         _matches = matches;
+        _time = time;
+        _store = store;
         _logger = logger;
         _serverStopping = lifetime.ApplicationStopping;
+    }
+
+    /// <summary>
+    /// Adopt rehydrated (terminal, journal-complete) records at startup,
+    /// before the endpoints serve. The records arrive already sequenced by
+    /// journal creation time; new tournaments sequence after them.
+    /// </summary>
+    public void Restore(IReadOnlyList<TournamentRecord> records)
+    {
+        foreach (var record in records)
+        {
+            _records[record.TournamentId] = record;
+            _sequenceSource = Math.Max(_sequenceSource, record.Sequence);
+        }
     }
 
     /// <summary>
@@ -174,9 +217,15 @@ internal sealed class TournamentService
 
         // No explicit seed ⇒ fair mode: each match runs on its own committed key.
         // An explicit seed keeps the reproducible SeededDiceSource (dev/repro).
+        var tournamentId = Guid.NewGuid().ToString("N");
         var record = new TournamentRecord(
-            Guid.NewGuid().ToString("N"), tournament, Interlocked.Increment(ref _sequenceSource),
-            fairDice: seed is null, timeControl);
+            tournamentId, tournament, Interlocked.Increment(ref _sequenceSource),
+            fairDice: seed is null, timeControl, _time.GetUtcNow(),
+            TournamentJournal.Create(_store, tournamentId, _time, _logger));
+
+        // The journal header is the record's durable identity — written first,
+        // before anything can happen to the tournament.
+        record.Journal!.RecordCreated(record);
         _records[record.TournamentId] = record;
 
         _ = Task.Run(() => RunTournamentAsync(record, sessions), CancellationToken.None);
@@ -231,11 +280,14 @@ internal sealed class TournamentService
                 tournament.Format.MatchLength,
                 tournament.Format.MatchesPerPairing,
                 tournament.Seed,
+                record.TimeControl,
                 record.Status,
                 tournament.Winner,
                 record.Detail,
                 standings,
-                matches);
+                matches,
+                record.StartedAtUtc,
+                record.EndedAtUtc);
         }
     }
 
@@ -280,6 +332,7 @@ internal sealed class TournamentService
                     scheduled.SeatOne, scheduled.SeatTwo, tournament.Format.MatchLength, scheduled.Seed,
                     diceKey: record.FairDice ? DiceKey.Generate() : null,
                     timeControl: record.TimeControl);
+                record.Journal?.RecordMatchStarted(scheduled.Index, match.MatchId);
                 if (!oneConnected || !twoConnected)
                 {
                     // Forfeit without play: no matchStarted was ever sent, so
@@ -287,7 +340,9 @@ internal sealed class TournamentService
                     string offender = oneConnected ? scheduled.SeatTwo : scheduled.SeatOne;
                     match.RecordForfeit(
                         seat: oneConnected ? 2 : 1,
+                        ForfeitCause.NeverConnected,
                         $"Engine '{offender}' was not connected when its tournament match came up.");
+                    await _matches.FinalizeUnplayedMatchAsync(match);
                 }
                 else
                 {
@@ -308,6 +363,7 @@ internal sealed class TournamentService
                             tournament.RecordResult(scheduled.Index, match.Winner!);
                         }
 
+                        record.Journal?.RecordResult(scheduled.Index, match.Winner!);
                         break;
                     case MatchStatus.Aborted:
                         Halt(
@@ -338,6 +394,25 @@ internal sealed class TournamentService
         }
         finally
         {
+            TournamentStatus finalStatus;
+            string? finalDetail;
+            lock (record.Gate)
+            {
+                record.EndedAtUtc = _time.GetUtcNow();
+                finalStatus = record.Status;
+                finalDetail = record.Detail;
+            }
+
+            // The journal's terminal event, then drain and close — after the
+            // loop (or Halt) has settled the final status, so it carries the
+            // truth. A process killed mid-drain folds honestly as Interrupted
+            // on the next start.
+            if (record.Journal is { } journal)
+            {
+                journal.RecordTerminal(finalStatus, finalDetail);
+                await journal.CompleteAsync();
+            }
+
             foreach (var session in sessions)
             {
                 session.ExitMatch();

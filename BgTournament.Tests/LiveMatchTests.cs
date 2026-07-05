@@ -168,8 +168,10 @@ public class LiveMatchTests
 
         var summary = new MatchSummary(
             "match-under-test", "Alpha", "Beta", MatchLength: 1, MaxGames: null, Seed: 7,
+            TimeControl: null,
             MatchStatus.Completed, Winner: "Alpha", SeatOneScore: 1, SeatTwoScore: 0,
-            ForfeitedBy: null, Detail: null);
+            ForfeitedBy: null, Detail: null,
+            StartedAtUtc: DateTimeOffset.UnixEpoch, EndedAtUtc: DateTimeOffset.UnixEpoch);
         live.MarkTerminal(summary);
 
         var terminal = Assert.IsType<LiveTerminalEvent>(await NextAsync(subscription));
@@ -185,8 +187,10 @@ public class LiveMatchTests
         live.OnGameEnded(1, CompletedGame(MatchSeat.Two, points: 1));
         var summary = new MatchSummary(
             "match-under-test", "Alpha", "Beta", MatchLength: 1, MaxGames: null, Seed: 7,
+            TimeControl: null,
             MatchStatus.Completed, Winner: "Beta", SeatOneScore: 0, SeatTwoScore: 1,
-            ForfeitedBy: null, Detail: null);
+            ForfeitedBy: null, Detail: null,
+            StartedAtUtc: DateTimeOffset.UnixEpoch, EndedAtUtc: DateTimeOffset.UnixEpoch);
         live.MarkTerminal(summary);
 
         // Joining after the match is over follows the same snapshot→terminal→close path.
@@ -221,8 +225,10 @@ public class LiveMatchTests
         // The host emits the terminal (forfeit) — the stream ends cleanly.
         var summary = new MatchSummary(
             "match-under-test", "Alpha", "Beta", MatchLength: 3, MaxGames: null, Seed: 7,
+            TimeControl: null,
             MatchStatus.Forfeited, Winner: "Alpha", SeatOneScore: null, SeatTwoScore: null,
-            ForfeitedBy: "Beta", Detail: "Engine 'Beta' disconnected mid-match.");
+            ForfeitedBy: "Beta", Detail: "Engine 'Beta' disconnected mid-match.",
+            StartedAtUtc: DateTimeOffset.UnixEpoch, EndedAtUtc: DateTimeOffset.UnixEpoch);
         live.MarkTerminal(summary);
         Assert.IsType<LiveTerminalEvent>(await NextAsync(subscription));
         await AssertClosedAsync(subscription);

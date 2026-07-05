@@ -25,9 +25,18 @@ internal static class ServerHarness
         "BgRLEngine", "BgRLEngine", "parity", "model.onnx"));
 
     public static WebApplicationFactory<Program> NewFactory(
-        double? decisionTimeoutSeconds = null, TimeProvider? timeProvider = null) =>
+        double? decisionTimeoutSeconds = null, TimeProvider? timeProvider = null,
+        string? dataDirectory = null) =>
         new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
         {
+            // Every factory journals into an isolated directory in the system
+            // temp area — never the repo checkout, never shared between tests.
+            // Rehydration tests pass the same directory to a second factory to
+            // restart "the server" over the same durable store.
+            builder.UseSetting(
+                "Persistence:DataDirectory",
+                dataDirectory ?? Directory.CreateTempSubdirectory("bgtournament-test-").FullName);
+
             if (decisionTimeoutSeconds is { } seconds)
             {
                 builder.UseSetting(
@@ -36,8 +45,9 @@ internal static class ServerHarness
 
             if (timeProvider is not null)
             {
-                // Replace the server's timestamp source (clock logic reads time
-                // only through it), making match clocks test-controlled.
+                // Replace the server's timestamp source (clock logic and journal
+                // timestamps read time only through it), making both
+                // test-controlled.
                 builder.ConfigureServices(services => services.AddSingleton(timeProvider));
             }
         });

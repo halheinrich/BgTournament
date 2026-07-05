@@ -1,0 +1,217 @@
+using BgTournament.Server.Persistence;
+
+namespace BgTournament.Tests;
+
+/// <summary>
+/// Pins the exact JSONL bytes of every journal event and every journal enum
+/// string — the same discipline <see cref="GoldenWireTests"/> applies to the
+/// wire and <see cref="ApiGoldenTests"/> to the admin contracts, with one
+/// difference in stakes: journal files are durable, so a drift here is not
+/// just a consumer break, it silently orphans every record already on disk.
+/// A deliberate format change bumps <c>JournalCodec.SchemaVersion</c> and
+/// moves these pins together.
+/// </summary>
+public class JournalGoldenTests
+{
+    private static readonly DateTimeOffset At = new(2026, 7, 5, 12, 0, 0, TimeSpan.Zero);
+    private const string AtWire = "2026-07-05T12:00:00+00:00";
+
+    /// <summary>A representative snapshot (the opening position, mover's frame).</summary>
+    private static readonly JournalGameState State = new(
+        new[] { 0, -2, 0, 0, 0, 0, 5, 0, 3, 0, 0, 0, -5, 5, 0, 0, 0, -3, 0, -5, 0, 0, 0, 0, 2, 0 },
+        CubeSize: 1, JournalCubeOwner.Centered,
+        MatchLength: 5, OnRollScore: 2, OpponentScore: 3, IsCrawford: false);
+
+    private const string StateWire =
+        """{"board":[0,-2,0,0,0,0,5,0,3,0,0,0,-5,5,0,0,0,-3,0,-5,0,0,0,0,2,0],"cubeSize":1,"cubeOwner":"centered","matchLength":5,"onRollScore":2,"opponentScore":3,"isCrawford":false}""";
+
+    private static void AssertGolden(MatchJournalEvent journalEvent, string golden)
+    {
+        Assert.Equal(golden, JournalCodec.Serialize(journalEvent));
+        Assert.Equal(golden, JournalCodec.Serialize(JournalCodec.DeserializeMatchEvent(golden)));
+    }
+
+    private static void AssertGolden(TournamentJournalEvent journalEvent, string golden)
+    {
+        Assert.Equal(golden, JournalCodec.Serialize(journalEvent));
+        Assert.Equal(golden, JournalCodec.Serialize(JournalCodec.DeserializeTournamentEvent(golden)));
+    }
+
+    [Fact]
+    public void MatchCreated_FairClocked_Golden() =>
+        AssertGolden(
+            new MatchCreatedEvent(
+                At, SchemaVersion: 1, "match-1", "Alpha", "Beta", MatchLength: 7, MaxGames: 50,
+                Seed: 42,
+                DiceAlgorithm: "hmac-sha256-dice-v1",
+                DiceKey: "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
+                TimeControl: new JournalTimeControl(120, 8)),
+            $$$"""{"type":"created","schemaVersion":1,"at":"{{{AtWire}}}","matchId":"match-1","engineOne":"Alpha","engineTwo":"Beta","matchLength":7,"maxGames":50,"seed":42,"diceAlgorithm":"hmac-sha256-dice-v1","diceKey":"00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff","timeControl":{"initialSeconds":120,"incrementSeconds":8}}""");
+
+    /// <summary>Explicit-seed, flat-regime header: every optional field is omitted, not null.</summary>
+    [Fact]
+    public void MatchCreated_SeededFlat_OmitsAbsentFields() =>
+        AssertGolden(
+            new MatchCreatedEvent(
+                At, SchemaVersion: 1, "match-1", "Alpha", "Beta", MatchLength: 1, MaxGames: null,
+                Seed: 7, DiceAlgorithm: null, DiceKey: null, TimeControl: null),
+            $$"""{"type":"created","schemaVersion":1,"at":"{{AtWire}}","matchId":"match-1","engineOne":"Alpha","engineTwo":"Beta","matchLength":1,"seed":7}""");
+
+    [Fact]
+    public void MatchStarted_Golden() =>
+        AssertGolden(
+            new MatchStartedEvent(At),
+            $$"""{"type":"started","at":"{{AtWire}}"}""");
+
+    [Fact]
+    public void MatchGameStarted_Golden() =>
+        AssertGolden(
+            new MatchGameStartedEvent(At, GameNumber: 3, SeatOneScore: 2, SeatTwoScore: 1, IsCrawford: true),
+            $$"""{"type":"gameStarted","at":"{{AtWire}}","gameNumber":3,"seatOneScore":2,"seatTwoScore":1,"isCrawford":true}""");
+
+    /// <summary>
+    /// The sign encoding is the point of this pin: a hit is a negative
+    /// destination and a bear-off is 0 — full substrate fidelity, unlike the
+    /// wire's deliberately hit-less moves.
+    /// </summary>
+    [Fact]
+    public void MatchPlay_HitAndBearOff_SignEncodingPinned() =>
+        AssertGolden(
+            new MatchPlayEvent(
+                At, JournalSeat.One, State, Die1: 3, Die2: 1,
+                Moves: [new JournalMove(8, -5), new JournalMove(6, 0)]),
+            $$"""{"type":"play","at":"{{AtWire}}","onRollSeat":"one","state":{{StateWire}},"die1":3,"die2":1,"moves":[{"from":8,"to":-5},{"from":6,"to":0}]}""");
+
+    /// <summary>A dance is an empty play, not an absent one.</summary>
+    [Fact]
+    public void MatchPlay_Dance_EmptyMoves() =>
+        AssertGolden(
+            new MatchPlayEvent(At, JournalSeat.Two, State, Die1: 6, Die2: 6, Moves: []),
+            $$"""{"type":"play","at":"{{AtWire}}","onRollSeat":"two","state":{{StateWire}},"die1":6,"die2":6,"moves":[]}""");
+
+    [Theory]
+    [InlineData(nameof(JournalCubeAction.NoDouble), "noDouble")]
+    [InlineData(nameof(JournalCubeAction.Double), "double")]
+    [InlineData(nameof(JournalCubeAction.Take), "take")]
+    [InlineData(nameof(JournalCubeAction.Pass), "pass")]
+    public void MatchCube_EveryAction(string action, string wire) =>
+        AssertGolden(
+            new MatchCubeEvent(At, JournalSeat.One, State, Enum.Parse<JournalCubeAction>(action)),
+            $$"""{"type":"cube","at":"{{AtWire}}","onRollSeat":"one","state":{{StateWire}},"action":"{{wire}}"}""");
+
+    [Theory]
+    [InlineData(nameof(JournalResultKind.Single), "single")]
+    [InlineData(nameof(JournalResultKind.Gammon), "gammon")]
+    [InlineData(nameof(JournalResultKind.Backgammon), "backgammon")]
+    public void MatchGameEnded_EveryResultKind(string kind, string wire) =>
+        AssertGolden(
+            new MatchGameEndedEvent(
+                At, JournalSeat.Two, State,
+                new JournalGameResult(Enum.Parse<JournalResultKind>(kind), OnRollWon: true, CubeSize: 2)),
+            $$$"""{"type":"gameEnded","at":"{{{AtWire}}}","onRollSeat":"two","state":{{{StateWire}}},"result":{"kind":"{{{wire}}}","onRollWon":true,"cubeSize":2}}""");
+
+    /// <summary>Non-centered cube owners, pinned once (the play/cube pins above use centered).</summary>
+    [Theory]
+    [InlineData(nameof(JournalCubeOwner.OnRoll), "onRoll")]
+    [InlineData(nameof(JournalCubeOwner.Opponent), "opponent")]
+    public void JournalCubeOwner_NonCentered(string owner, string wire) =>
+        AssertGolden(
+            new MatchCubeEvent(
+                At, JournalSeat.One,
+                State with { CubeSize = 2, CubeOwner = Enum.Parse<JournalCubeOwner>(owner) },
+                JournalCubeAction.NoDouble),
+            $$"""{"type":"cube","at":"{{AtWire}}","onRollSeat":"one","state":{"board":[0,-2,0,0,0,0,5,0,3,0,0,0,-5,5,0,0,0,-3,0,-5,0,0,0,0,2,0],"cubeSize":2,"cubeOwner":"{{wire}}","matchLength":5,"onRollScore":2,"opponentScore":3,"isCrawford":false},"action":"noDouble"}""");
+
+    [Fact]
+    public void MatchTerminal_Completed_Golden() =>
+        AssertGolden(
+            new MatchTerminalEvent(
+                At, JournalMatchOutcome.Completed, Winner: "Alpha", SeatOneScore: 7, SeatTwoScore: 3,
+                ForfeitedBy: null, ForfeitCause: null, Detail: null),
+            $$"""{"type":"terminal","at":"{{AtWire}}","status":"completed","winner":"Alpha","seatOneScore":7,"seatTwoScore":3}""");
+
+    /// <summary>A capped money session ends completed with no winner — the field is omitted.</summary>
+    [Fact]
+    public void MatchTerminal_CompletedNoWinner_Golden() =>
+        AssertGolden(
+            new MatchTerminalEvent(
+                At, JournalMatchOutcome.Completed, Winner: null, SeatOneScore: 4, SeatTwoScore: 6,
+                ForfeitedBy: null, ForfeitCause: null, Detail: null),
+            $$"""{"type":"terminal","at":"{{AtWire}}","status":"completed","seatOneScore":4,"seatTwoScore":6}""");
+
+    /// <summary>
+    /// Every structured forfeit cause. Note the default encoder escapes the
+    /// apostrophes engine names are quoted with — pinned deliberately, the
+    /// Api-golden precedent.
+    /// </summary>
+    [Theory]
+    [InlineData(nameof(JournalForfeitCause.ContractViolation), "contractViolation")]
+    [InlineData(nameof(JournalForfeitCause.Timeout), "timeout")]
+    [InlineData(nameof(JournalForfeitCause.FlagFall), "flagFall")]
+    [InlineData(nameof(JournalForfeitCause.Disconnect), "disconnect")]
+    [InlineData(nameof(JournalForfeitCause.NeverConnected), "neverConnected")]
+    public void MatchTerminal_Forfeited_EveryCause(string cause, string wire) =>
+        AssertGolden(
+            new MatchTerminalEvent(
+                At, JournalMatchOutcome.Forfeited, Winner: "Beta", SeatOneScore: null,
+                SeatTwoScore: null, ForfeitedBy: "Alpha",
+                ForfeitCause: Enum.Parse<JournalForfeitCause>(cause),
+                Detail: "Engine Alpha broke the contract."),
+            $$"""{"type":"terminal","at":"{{AtWire}}","status":"forfeited","winner":"Beta","forfeitedBy":"Alpha","forfeitCause":"{{wire}}","detail":"Engine Alpha broke the contract."}""");
+
+    [Theory]
+    [InlineData(nameof(JournalMatchOutcome.Aborted), "aborted")]
+    [InlineData(nameof(JournalMatchOutcome.Faulted), "faulted")]
+    public void MatchTerminal_WinnerlessOutcomes(string outcome, string wire) =>
+        AssertGolden(
+            new MatchTerminalEvent(
+                At, Enum.Parse<JournalMatchOutcome>(outcome), Winner: null, SeatOneScore: null,
+                SeatTwoScore: null,
+                ForfeitedBy: null, ForfeitCause: null, Detail: "The server stopped the match."),
+            $$"""{"type":"terminal","at":"{{AtWire}}","status":"{{wire}}","detail":"The server stopped the match."}""");
+
+    [Fact]
+    public void TournamentCreated_Golden() =>
+        AssertGolden(
+            new TournamentCreatedEvent(
+                At, SchemaVersion: 1, "tournament-1", ["Alpha", "Beta", "Gamma"], MatchLength: 3,
+                MatchesPerPairing: 2, Seed: 99, FairDice: true,
+                TimeControl: new JournalTimeControl(60, 5)),
+            $$$"""{"type":"created","schemaVersion":1,"at":"{{{AtWire}}}","tournamentId":"tournament-1","participants":["Alpha","Beta","Gamma"],"matchLength":3,"matchesPerPairing":2,"seed":99,"fairDice":true,"timeControl":{"initialSeconds":60,"incrementSeconds":5}}""");
+
+    [Fact]
+    public void TournamentCreated_SeededFlat_OmitsTimeControl() =>
+        AssertGolden(
+            new TournamentCreatedEvent(
+                At, SchemaVersion: 1, "tournament-1", ["Alpha", "Beta"], MatchLength: 1,
+                MatchesPerPairing: 1, Seed: 7, FairDice: false, TimeControl: null),
+            $$"""{"type":"created","schemaVersion":1,"at":"{{AtWire}}","tournamentId":"tournament-1","participants":["Alpha","Beta"],"matchLength":1,"matchesPerPairing":1,"seed":7,"fairDice":false}""");
+
+    [Fact]
+    public void TournamentMatchStarted_Golden() =>
+        AssertGolden(
+            new TournamentMatchStartedEvent(At, MatchIndex: 4, MatchId: "match-5"),
+            $$"""{"type":"matchStarted","at":"{{AtWire}}","matchIndex":4,"matchId":"match-5"}""");
+
+    [Fact]
+    public void TournamentResult_Golden() =>
+        AssertGolden(
+            new TournamentResultEvent(At, MatchIndex: 4, Winner: "Alpha"),
+            $$"""{"type":"result","at":"{{AtWire}}","matchIndex":4,"winner":"Alpha"}""");
+
+    [Theory]
+    [InlineData(nameof(JournalTournamentOutcome.Completed), "completed")]
+    [InlineData(nameof(JournalTournamentOutcome.Aborted), "aborted")]
+    [InlineData(nameof(JournalTournamentOutcome.Faulted), "faulted")]
+    public void TournamentTerminal_EveryOutcome(string outcome, string wire) =>
+        AssertGolden(
+            new TournamentTerminalEvent(At, Enum.Parse<JournalTournamentOutcome>(outcome), Detail: null),
+            $$"""{"type":"terminal","at":"{{AtWire}}","status":"{{wire}}"}""");
+
+    [Fact]
+    public void TournamentTerminal_WithDetail_Golden() =>
+        AssertGolden(
+            new TournamentTerminalEvent(
+                At, JournalTournamentOutcome.Aborted, Detail: "The server stopped the tournament."),
+            $$"""{"type":"terminal","at":"{{AtWire}}","status":"aborted","detail":"The server stopped the tournament."}""");
+}

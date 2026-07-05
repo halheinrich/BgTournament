@@ -30,4 +30,13 @@ public enum MatchStatus
     /// <summary>An unexpected server-side error; see the detail and logs.</summary>
     [JsonStringEnumMemberName("faulted")]
     Faulted,
+
+    /// <summary>
+    /// The server died (crash, kill) while the match was running; the record
+    /// was reconstructed from its journal at the next start with all evidence
+    /// retained. Terminal, and only ever produced by rehydration — a live
+    /// match never carries it.
+    /// </summary>
+    [JsonStringEnumMemberName("interrupted")]
+    Interrupted,
 }

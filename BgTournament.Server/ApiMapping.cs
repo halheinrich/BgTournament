@@ -25,12 +25,15 @@ internal static class ApiMapping
             record.MatchLength,
             record.MaxGames,
             record.Seed,
+            record.TimeControl,
             record.Status,
             record.Winner,
             record.SeatOneScore,
             record.SeatTwoScore,
             record.ForfeitedBy,
-            record.Detail);
+            record.Detail,
+            record.StartedAtUtc,
+            record.EndedAtUtc);
 
     /// <summary>Project a domain standings row onto its admin shape.</summary>
     public static StandingEntry ToStandingEntry(this StandingsRow row) =>

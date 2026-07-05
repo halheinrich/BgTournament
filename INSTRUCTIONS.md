@@ -77,7 +77,7 @@ BgTournament/
 │   ├── StandingsRow.cs                 one standings line: wins, losses, Sonneborn-Berger
 │   └── Tournament.cs                   the aggregate: schedule, results, tie-break ladder
 ├── BgTournament.Server/                the tournament host (all types internal)
-│   ├── Program.cs                      /engine (WS) + the admin HTTP endpoints
+│   ├── Program.cs                      /engine (WS) + the admin HTTP endpoints; rehydrate-before-serve
 │   ├── EngineSocketEndpoint.cs         handshake gate; named rejections
 │   ├── EngineConnection.cs             receive loop; one in-flight query; Closed task
 │   ├── IEngineChannel.cs               query seam (EngineConnection live, faked in tests)
@@ -89,10 +89,26 @@ BgTournament/
 │   ├── MatchService.cs                 match host: attribution, forfeits, records
 │   ├── TournamentService.cs            tournament host: claims, orchestration, folding
 │   ├── EngineFailureExceptions.cs      timeout / disconnected / protocol-violation
+│   ├── ForfeitCause.cs                 the structured forfeit taxonomy the journal records
 │   ├── TournamentOptions.cs            decision + handshake timeouts (appsettings)
 │   ├── ApiMapping.cs                   the ONLY server-internal → Api projections
 │   ├── ReplayProjection.cs             transcript → replay contract: stamped-seat read + flip
-│   └── LiveMatch.cs                    per-match live cache + SSE broadcast (the IMatchObserver adapter)
+│   ├── MatExportProjection.cs          record → MatExporter factory choice (.MAT surface)
+│   ├── LiveMatch.cs                    per-match live cache + SSE broadcast (the IMatchObserver adapter)
+│   ├── CompositeMatchObserver.cs       fans the runner's callbacks to LiveMatch + MatchJournal
+│   └── Persistence/                    the durable records journal (Arc 9; Arc 10 reads this vocabulary)
+│       ├── MatchJournalEvent.cs        match-journal DTO union ("type"-discriminated JSONL lines)
+│       ├── TournamentJournalEvent.cs   tournament-journal DTO union
+│       ├── JournalShapes.cs            journal-local enums/shapes (never Api or substrate enums)
+│       ├── JournalCodec.cs             SchemaVersion + the ONLY journal (de)serialization path
+│       ├── JournalMapping.cs           the ONLY substrate/server ↔ journal correspondences (both ways)
+│       ├── IJournalStore.cs            the store seam: raw sinks/sources by kind + id
+│       ├── FileJournalStore.cs         <DataDirectory>/matches|tournaments/<id>.jsonl
+│       ├── JournalWriter.cs            per-journal channel + background pump; flush per event
+│       ├── MatchJournal.cs             the write-through IMatchObserver sibling of LiveMatch
+│       ├── TournamentJournal.cs        created / matchStarted / result / terminal
+│       ├── JournalRehydrator.cs        startup fold: journals → records, before endpoints serve
+│       └── PersistenceOptions.cs       Persistence:DataDirectory (appsettings)
 ├── BgTournament.EngineClient/          .NET SDK + reference bot
 │   ├── EngineClient.cs                 connect/handshake/serve loop over local agents; optional fair-dice verify hook
 │   ├── EngineIdentity.cs               hello identity
@@ -127,7 +143,10 @@ BgTournament/
     ├── MatExportEndpointTests.cs       /matches/{id}/export.mat: golden, money, forfeit/aborted/faulted, 404/409
     ├── TournamentCoreTests.cs          domain pins: schedule, seeds, tie-break ladder
     ├── TournamentServerTests.cs        tournament claims, validation, forfeit folding
-    └── TournamentSmokeTests.cs         3-engine round-robin over the wire to a winner
+    ├── TournamentSmokeTests.cs         3-engine round-robin over the wire to a winner
+    ├── JournalGoldenTests.cs           byte-for-byte journal-event pins, every event + enum
+    ├── JournalMappingTests.cs          substrate ↔ journal fidelity round trips (hits, frames, taxonomy)
+    └── RehydrationTests.cs             restart identity, torn tail, corruption, fair-dice evidence
 ```
 
 ## Architecture
@@ -351,6 +370,44 @@ the untouched substrate `Transcript` (the replay projections stay seat-One-frame
 API shapes; the export needs the raw substrate frame). Same terminal-only gate
 as replay: a running match answers 409 pointed at `/live`.
 
+**Durable records (the journal).** Records survive restarts via an
+append-only, schema-versioned JSONL journal per match and per tournament under
+`Persistence:DataDirectory` — designed as an *ordered audit record* (the Arc 10
+arbitration log reads this vocabulary), not a cache-warming format. Every event
+carries an `at` timestamp from the DI `TimeProvider`; the first line is always
+the `created` header (identity, configuration, `schemaVersion`, and — fair
+mode — the *escrowed* `DiceKey`: it must be on disk before terminal or an
+interrupted match could never reveal it; the commitment stays derived, the
+no-drift rule). Match events mirror the observer flow at full substrate
+fidelity — `started`, `gameStarted`, `play`/`cube`/`gameEnded` transcript
+entries in their native frames with hit encoding intact (unlike the wire) — and
+a host-written `terminal` (status, winner, scores, structured `ForfeitCause`)
+closes the file. The tournament journal is thin: `created`,
+`matchStarted` (the schedule-index ↔ match-id linkage), one `result` per fold,
+`terminal`; the schedule itself is re-derived, never stored. The write path is
+`MatchJournal`, a sibling `IMatchObserver` beside `LiveMatch` under a
+`CompositeMatchObserver` — same discipline (fast in-memory mapping, non-blocking
+channel write, never awaits/throws uncontained; a journal fault logs loudly and
+stops journaling while the match plays on) — draining through a per-journal
+background `JournalWriter` that flushes per event (the settled durability tier:
+survives process death; power loss only costs the torn tail the fold already
+tolerates). The layering is strict SSOT: journal DTOs are their own family with
+journal-local enums (`JournalCodec` the only (de)serialization path,
+`JournalMapping` the only correspondences, `JournalGoldenTests` the byte pins),
+and `IJournalStore`/`FileJournalStore` move raw streams only. At startup
+`JournalRehydrator` folds every journal back into records *before endpoints
+serve*, replaying entries through a fresh `LiveMatch`'s own callbacks (no
+second fold path) and rebuilding `GameRecord`s from the stamped facts — so
+replay, `.MAT` export, and summaries serve identically across a restart.
+Damage policy: a torn final line is dropped with a warning; corruption on an
+earlier line folds the trusted prefix with a corruption-naming detail; a
+journal with no trusted `terminal` event folds to `MatchStatus.Interrupted` /
+`TournamentStatus.Interrupted` — terminal, evidence intact, `endedAtUtc`
+honestly null. Restart listing order is header-timestamp order with an
+ordinal-id tiebreak. Tournament resume-after-restart is deliberately not
+implemented (the journaled results enable it later); an interrupted
+tournament's finished matches remain fully served records.
+
 **Client shape.** `EngineClient.ServeAsync(WebSocket)` is the transport seam
 (any socket source, in-proc test servers included); `RunAsync(Uri)` wraps it
 with a `ClientWebSocket`. No perspective work client-side — the unified frame
@@ -485,12 +542,18 @@ public sealed record TimeControl                            // validated Fischer
     public TimeSpan Increment { get; }
 }   // JSON binding via its own converter: invalid values → JsonException (the standard 400 funnel)
 public sealed record EngineSummary(...);                   // GET /engines rows
-public sealed record MatchSummary(...);                    // match endpoints' projection
-public sealed record TournamentSummary(...);               // tournament endpoints' projection
+public sealed record MatchSummary(...);                    // match endpoints' projection; carries
+                                                           //   timeControl + startedAtUtc/endedAtUtc
+                                                           //   (endedAtUtc null while running AND on
+                                                           //   Interrupted — the end died with the server)
+public sealed record TournamentSummary(...);               // tournament endpoints' projection; same
+                                                           //   timeControl + timestamp fields
 public sealed record StandingEntry(...);                   //   one standings line
 public sealed record TournamentMatchEntry(...);            //   one schedule-ledger row
-public enum MatchStatus { Running, Completed, Forfeited, Aborted, Faulted }
-public enum TournamentStatus { Running, Completed, Aborted, Faulted }
+public enum MatchStatus { Running, Completed, Forfeited, Aborted, Faulted, Interrupted }
+public enum TournamentStatus { Running, Completed, Aborted, Faulted, Interrupted }
+    // Interrupted ("interrupted"): terminal; produced only by journal rehydration
+    // (the server died under the record). A live match/tournament never carries it.
 
 // Replay (GET /matches/{matchId}/games) — positions are absolute:
 public enum Seat { One, Two }                               // "seatOne"/"seatTwo"; One = engineOne
@@ -542,7 +605,10 @@ public sealed record LiveTerminalEvent(MatchSummary Match) : LiveMatchEvent;   /
 //   GET  /tournaments/{tournamentId}       status, standings, winner, per-match ledger (ids
 //                                          resolve on GET /matches/{matchId})
 // Config: Tournament:DecisionTimeoutSeconds (default 30; flat regime only — a
-// timeControl replaces it), Tournament:HandshakeTimeoutSeconds (10).
+// timeControl replaces it), Tournament:HandshakeTimeoutSeconds (10),
+// Persistence:DataDirectory (default "data" under the content root; the durable
+// journals live in matches/ and tournaments/ beneath it, and fair-mode dice
+// keys are escrowed there — the directory shares the server's trust domain).
 ```
 
 ## Pitfalls
@@ -592,10 +658,14 @@ public sealed record LiveTerminalEvent(MatchSummary Match) : LiveMatchEvent;   /
 - **`Tournament` (Core) is not thread-safe.** The server serializes every
   aggregate read and mutation through its `TournamentRecord.Gate`; keep any new
   access inside that lock.
-- **The seed derivation is a reproducibility contract.** Changing
-  `Tournament.DeriveMatchSeed` silently changes every tournament's dice.
-  Recorded matches stay re-rollable (each match records its own seed), but a
-  re-run of a past tournament seed would no longer reproduce it.
+- **The seed derivation is a reproducibility contract — and now a
+  durable-format contract.** Changing `Tournament.DeriveMatchSeed` (or the
+  schedule construction) silently changes every tournament's dice, and it also
+  changes what rehydration rebuilds: the tournament journal deliberately stores
+  only participants + format + seed and *re-derives* the schedule, so a
+  derivation change re-folds every stored tournament differently even though no
+  JSON byte moved. Treat such a change as schema-relevant: it needs the same
+  conscious versioning/migration thought as a journal shape change.
 - **Omitting the seed now means fair mode, not a random seeded match.** `POST
   /matches`/`/tournaments` with no seed selects verifiable dice (commitment on
   `matchStarted`, reveal on `matchEnded`); only an explicit seed keeps
@@ -662,6 +732,41 @@ public sealed record LiveTerminalEvent(MatchSummary Match) : LiveMatchEvent;   /
   is the alarm: a shape or enum-string drift in `BgTournament.Api` is a
   contract change for BgArena_Blazor. Note the Web-default encoder escapes
   apostrophes (`'` → `\u0027`) in detail strings — pinned deliberately.
+- **The journal format is durable — a byte change orphans files already on
+  disk.** `JournalGoldenTests` pins every event and enum string; a deliberate
+  change bumps `JournalCodec.SchemaVersion` and decides the migration story
+  consciously (rehydration skips unknown versions loudly). That is also why
+  journal DTOs use journal-local enums, never the Api or substrate ones: an
+  Api rename must never silently rewrite the durable format. Serialize only
+  through `JournalCodec` (same discriminator footgun as `WireProtocol`), map
+  only through `JournalMapping`.
+- **Journal observer callbacks obey the live-feed rule.** `MatchJournal`'s
+  `IMatchObserver` callbacks run synchronously on the match loop: fast
+  in-memory mapping + a non-blocking channel write, never awaiting, doing I/O,
+  or throwing uncontained. Disk work happens only on the `JournalWriter` pump;
+  a journal failure logs loudly and stops journaling — the match must play on,
+  and the record must never wait on disk.
+- **Journal moves keep the hit signs the wire strips.** `JournalMapping`
+  serializes `Play` moves with the raw sign-encoded destinations (negative =
+  hit, 0 = bear-off) so rehydration rebuilds the exact substrate `Play`.
+  Reusing `WireMapping.ToWireMoves` here would silently lose hits from every
+  stored transcript — replay would still look legal (matching is
+  hit-insensitive) while the audit record lied.
+- **The damage policy is tail-lenient, prefix-strict.** Only a journal's
+  *final* unparseable line is a torn tail (crash mid-append) and dropped with a
+  warning; a failure on any earlier line is corruption — the fold stops there
+  and serves the trusted prefix as Interrupted with a corruption-naming detail.
+  Never trust events past a corrupt line, even a well-formed terminal.
+- **Interrupted is rehydration's word alone.** No code path ever *writes* an
+  interrupted terminal event — the status is precisely "the journal has no
+  trusted terminal line". A shutdown race can therefore demote Aborted to
+  Interrupted on the next boot (terminal written but not yet flushed when the
+  process died): both are honest "server stopped it" statuses; don't "fix"
+  this by writing terminal events early.
+- **`Restore` runs before the endpoints serve, once.** Rehydrated records are
+  terminal, `MarkTerminal`'d, and journal-less (`Journal` null — the file on
+  disk already is their complete history). Nothing may rehydrate to Running,
+  and nothing may append to a rehydrated journal.
 
 ## Subproject-internal next steps
 
@@ -693,9 +798,9 @@ public sealed record LiveTerminalEvent(MatchSummary Match) : LiveMatchEvent;   /
 - **Tournament rejoin policy** — v1 binds the sessions present at start;
   re-resolving a participant by name at each scheduled match (so a
   reconnected engine plays on) is a candidate once real remote engines flake.
-- **Record timestamps** — match/tournament records carry creation order
-  (internal `Sequence`) but no wall-clock times; a dashboard "when" column
-  wants `startedAtUtc`/`endedAtUtc` on the summaries.
+- **Journal retention policy** — journals accumulate forever (one small file
+  per match); nothing prunes or archives. Fine at hobby scale; revisit when
+  the data directory's growth is ever noticed.
 - **Disconnect-during-`matchStarted` forfeit gap** — an engine that vanishes
   in the narrow window while `matchStarted` is being sent can surface as a
   Faulted match rather than a Forfeited one (seen once as test flake; the

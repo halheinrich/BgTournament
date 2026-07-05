@@ -74,6 +74,7 @@ public class ReplayProjectionTests
             MatchLength = matchLength,
             Seed = 0,
             Sequence = 1,
+            StartedAtUtc = DateTimeOffset.UnixEpoch,
             Status = MatchStatus.Completed,
             Result = result,
             Live = new LiveMatch("match-under-test", NullLogger.Instance),

@@ -27,6 +27,7 @@ public class ApiGoldenTests
     [InlineData(MatchStatus.Forfeited, "forfeited")]
     [InlineData(MatchStatus.Aborted, "aborted")]
     [InlineData(MatchStatus.Faulted, "faulted")]
+    [InlineData(MatchStatus.Interrupted, "interrupted")]
     public void MatchStatus_EveryMember(MatchStatus status, string wire) =>
         AssertGolden(status, $"\"{wire}\"");
 
@@ -35,6 +36,7 @@ public class ApiGoldenTests
     [InlineData(TournamentStatus.Completed, "completed")]
     [InlineData(TournamentStatus.Aborted, "aborted")]
     [InlineData(TournamentStatus.Faulted, "faulted")]
+    [InlineData(TournamentStatus.Interrupted, "interrupted")]
     public void TournamentStatus_EveryMember(TournamentStatus status, string wire) =>
         AssertGolden(status, $"\"{wire}\"");
 
@@ -84,32 +86,58 @@ public class ApiGoldenTests
             new TimeControl(initialSeconds: 90.5, incrementSeconds: 0),
             """{"initialSeconds":90.5,"incrementSeconds":0}""");
 
+    /// <summary>A reference instant for the summary timestamps (UTC, zero fraction).</summary>
+    private static readonly DateTimeOffset StartedAt = new(2026, 7, 5, 12, 0, 0, TimeSpan.Zero);
+    private static readonly DateTimeOffset EndedAt = new(2026, 7, 5, 12, 30, 0, TimeSpan.Zero);
+
     [Fact]
     public void MatchSummary_Running() =>
         AssertGolden(
             new MatchSummary(
                 "match-1", "Alpha", "Beta", MatchLength: 7, MaxGames: null, Seed: 42,
+                TimeControl: null,
                 MatchStatus.Running, Winner: null, SeatOneScore: null, SeatTwoScore: null,
-                ForfeitedBy: null, Detail: null),
-            """{"matchId":"match-1","engineOne":"Alpha","engineTwo":"Beta","matchLength":7,"maxGames":null,"seed":42,"status":"running","winner":null,"seatOneScore":null,"seatTwoScore":null,"forfeitedBy":null,"detail":null}""");
+                ForfeitedBy: null, Detail: null,
+                StartedAtUtc: StartedAt, EndedAtUtc: null),
+            """{"matchId":"match-1","engineOne":"Alpha","engineTwo":"Beta","matchLength":7,"maxGames":null,"seed":42,"timeControl":null,"status":"running","winner":null,"seatOneScore":null,"seatTwoScore":null,"forfeitedBy":null,"detail":null,"startedAtUtc":"2026-07-05T12:00:00+00:00","endedAtUtc":null}""");
 
     [Fact]
     public void MatchSummary_Completed() =>
         AssertGolden(
             new MatchSummary(
                 "match-1", "Alpha", "Beta", MatchLength: 3, MaxGames: null, Seed: 42,
+                TimeControl: new TimeControl(120, 8),
                 MatchStatus.Completed, Winner: "Alpha", SeatOneScore: 3, SeatTwoScore: 1,
-                ForfeitedBy: null, Detail: null),
-            """{"matchId":"match-1","engineOne":"Alpha","engineTwo":"Beta","matchLength":3,"maxGames":null,"seed":42,"status":"completed","winner":"Alpha","seatOneScore":3,"seatTwoScore":1,"forfeitedBy":null,"detail":null}""");
+                ForfeitedBy: null, Detail: null,
+                StartedAtUtc: StartedAt, EndedAtUtc: EndedAt),
+            """{"matchId":"match-1","engineOne":"Alpha","engineTwo":"Beta","matchLength":3,"maxGames":null,"seed":42,"timeControl":{"initialSeconds":120,"incrementSeconds":8},"status":"completed","winner":"Alpha","seatOneScore":3,"seatTwoScore":1,"forfeitedBy":null,"detail":null,"startedAtUtc":"2026-07-05T12:00:00+00:00","endedAtUtc":"2026-07-05T12:30:00+00:00"}""");
 
     [Fact]
     public void MatchSummary_Forfeited() =>
         AssertGolden(
             new MatchSummary(
                 "match-1", "Alpha", "Beta", MatchLength: 3, MaxGames: null, Seed: 42,
+                TimeControl: null,
                 MatchStatus.Forfeited, Winner: "Beta", SeatOneScore: null, SeatTwoScore: null,
-                ForfeitedBy: "Alpha", Detail: "Engine 'Alpha' disconnected mid-match."),
-            """{"matchId":"match-1","engineOne":"Alpha","engineTwo":"Beta","matchLength":3,"maxGames":null,"seed":42,"status":"forfeited","winner":"Beta","seatOneScore":null,"seatTwoScore":null,"forfeitedBy":"Alpha","detail":"Engine \u0027Alpha\u0027 disconnected mid-match."}""");
+                ForfeitedBy: "Alpha", Detail: "Engine 'Alpha' disconnected mid-match.",
+                StartedAtUtc: StartedAt, EndedAtUtc: EndedAt),
+            """{"matchId":"match-1","engineOne":"Alpha","engineTwo":"Beta","matchLength":3,"maxGames":null,"seed":42,"timeControl":null,"status":"forfeited","winner":"Beta","seatOneScore":null,"seatTwoScore":null,"forfeitedBy":"Alpha","detail":"Engine \u0027Alpha\u0027 disconnected mid-match.","startedAtUtc":"2026-07-05T12:00:00+00:00","endedAtUtc":"2026-07-05T12:30:00+00:00"}""");
+
+    /// <summary>
+    /// The rehydrated-orphan shape: a terminal status with no end time — the
+    /// true end died with the server, so <c>endedAtUtc</c> is honestly null.
+    /// </summary>
+    [Fact]
+    public void MatchSummary_Interrupted() =>
+        AssertGolden(
+            new MatchSummary(
+                "match-1", "Alpha", "Beta", MatchLength: 3, MaxGames: null, Seed: 42,
+                TimeControl: null,
+                MatchStatus.Interrupted, Winner: null, SeatOneScore: null, SeatTwoScore: null,
+                ForfeitedBy: null,
+                Detail: "The server was interrupted while this match was running; the record was reconstructed from its journal.",
+                StartedAtUtc: StartedAt, EndedAtUtc: null),
+            """{"matchId":"match-1","engineOne":"Alpha","engineTwo":"Beta","matchLength":3,"maxGames":null,"seed":42,"timeControl":null,"status":"interrupted","winner":null,"seatOneScore":null,"seatTwoScore":null,"forfeitedBy":null,"detail":"The server was interrupted while this match was running; the record was reconstructed from its journal.","startedAtUtc":"2026-07-05T12:00:00+00:00","endedAtUtc":null}""");
 
     [Fact]
     public void StartTournamentRequest_Golden() =>
@@ -151,6 +179,7 @@ public class ApiGoldenTests
         AssertGolden(
             new TournamentSummary(
                 "tournament-1", ["Alpha", "Beta"], MatchLength: 1, MatchesPerPairing: 1, Seed: 7,
+                TimeControl: null,
                 TournamentStatus.Completed, Winner: "Alpha", Detail: null,
                 Standings:
                 [
@@ -160,8 +189,9 @@ public class ApiGoldenTests
                 Matches:
                 [
                     new TournamentMatchEntry(0, "Alpha", "Beta", 1234, "match-1", MatchStatus.Completed, "Alpha"),
-                ]),
-            """{"tournamentId":"tournament-1","participants":["Alpha","Beta"],"matchLength":1,"matchesPerPairing":1,"seed":7,"status":"completed","winner":"Alpha","detail":null,"standings":[{"rank":1,"participant":"Alpha","wins":1,"losses":0,"sonnebornBerger":0},{"rank":2,"participant":"Beta","wins":0,"losses":1,"sonnebornBerger":0}],"matches":[{"index":0,"seatOne":"Alpha","seatTwo":"Beta","seed":1234,"matchId":"match-1","status":"completed","winner":"Alpha"}]}""");
+                ],
+                StartedAtUtc: StartedAt, EndedAtUtc: EndedAt),
+            """{"tournamentId":"tournament-1","participants":["Alpha","Beta"],"matchLength":1,"matchesPerPairing":1,"seed":7,"timeControl":null,"status":"completed","winner":"Alpha","detail":null,"standings":[{"rank":1,"participant":"Alpha","wins":1,"losses":0,"sonnebornBerger":0},{"rank":2,"participant":"Beta","wins":0,"losses":1,"sonnebornBerger":0}],"matches":[{"index":0,"seatOne":"Alpha","seatTwo":"Beta","seed":1234,"matchId":"match-1","status":"completed","winner":"Alpha"}],"startedAtUtc":"2026-07-05T12:00:00+00:00","endedAtUtc":"2026-07-05T12:30:00+00:00"}""");
 
     [Theory]
     [InlineData(Seat.One, "seatOne")]
@@ -294,7 +324,9 @@ public class ApiGoldenTests
         AssertGolden<LiveMatchEvent>(
             new LiveTerminalEvent(new MatchSummary(
                 "match-1", "Alpha", "Beta", MatchLength: 3, MaxGames: null, Seed: 42,
+                TimeControl: null,
                 MatchStatus.Completed, Winner: "Alpha", SeatOneScore: 3, SeatTwoScore: 1,
-                ForfeitedBy: null, Detail: null)),
-            """{"type":"terminal","match":{"matchId":"match-1","engineOne":"Alpha","engineTwo":"Beta","matchLength":3,"maxGames":null,"seed":42,"status":"completed","winner":"Alpha","seatOneScore":3,"seatTwoScore":1,"forfeitedBy":null,"detail":null}}""");
+                ForfeitedBy: null, Detail: null,
+                StartedAtUtc: StartedAt, EndedAtUtc: EndedAt)),
+            """{"type":"terminal","match":{"matchId":"match-1","engineOne":"Alpha","engineTwo":"Beta","matchLength":3,"maxGames":null,"seed":42,"timeControl":null,"status":"completed","winner":"Alpha","seatOneScore":3,"seatTwoScore":1,"forfeitedBy":null,"detail":null,"startedAtUtc":"2026-07-05T12:00:00+00:00","endedAtUtc":"2026-07-05T12:30:00+00:00"}}""");
 }
