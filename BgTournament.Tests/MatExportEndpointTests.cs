@@ -172,6 +172,9 @@ public class MatExportEndpointTests
 
         // Faulted (an unexpected server error) is likewise not inducible in-test;
         // re-tag the terminal record to exercise the abandoned mapping and reason.
+        // If a Faulted path ever becomes deterministically reachable through the
+        // real runner (e.g. a non-contract agent exception), drive it here instead
+        // of re-tagging — a nice-to-have, not a gap.
         record.Status = MatchStatus.Faulted;
 
         using var http = factory.CreateClient();
