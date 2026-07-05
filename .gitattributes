@@ -1,0 +1,5 @@
+# Jellyfish .MAT export goldens are byte-exact fixtures. The exporter emits
+# LF-only text with no trailing whitespace; keep the committed goldens LF and
+# out of the umbrella's `* text=auto` EOL conversion so a Windows checkout does
+# not rewrite them to CRLF and break byte comparison.
+*.mat -text

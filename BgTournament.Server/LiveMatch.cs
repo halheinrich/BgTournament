@@ -40,6 +40,15 @@ internal sealed class LiveMatch : IMatchObserver
     private readonly List<Channel<LiveMatchEvent>> _subscribers = new();
     private readonly List<GameRecord> _completedGames = new();
     private readonly List<GameEntry> _currentGameEntries = new();
+
+    /// <summary>
+    /// The in-flight game's substrate transcript — raw entries in their native
+    /// (on-roll) frames — or null between games. Distinct from
+    /// <see cref="_currentGameEntries"/> (seat-One-frame API projections for the
+    /// live snapshot): this is the untouched substrate record an interrupted
+    /// match's <c>.MAT</c> export carries as its trailing partial game.
+    /// </summary>
+    private Transcript? _partialTranscript;
     private int _gameNumber;
     private int _seatOneScore;
     private int _seatTwoScore;
@@ -73,6 +82,38 @@ internal sealed class LiveMatch : IMatchObserver
         }
     }
 
+    /// <summary>
+    /// The in-flight game's transcript — the entries recorded since the current
+    /// game started, with no terminating result — or null when no game is in
+    /// progress (between games, or before the first, or after a clean match
+    /// end). The trailing partial an interrupted match's <c>.MAT</c> export
+    /// carries; the finished games travel in <see cref="CompletedGames"/>. A
+    /// defensive snapshot taken under the lock; null (never an empty transcript)
+    /// when nothing has been recorded, matching the exporter's "no entries ⇒ no
+    /// game block" contract.
+    /// </summary>
+    public Transcript? PartialTranscript
+    {
+        get
+        {
+            lock (_lock)
+            {
+                if (_partialTranscript is not { Entries.Count: > 0 })
+                {
+                    return null;
+                }
+
+                var snapshot = new Transcript();
+                foreach (var entry in _partialTranscript.Entries)
+                {
+                    snapshot.Append(entry);
+                }
+
+                return snapshot;
+            }
+        }
+    }
+
     /// <inheritdoc/>
     public void OnGameStarted(GameStartContext context) => SafelyObserve(() =>
     {
@@ -87,6 +128,11 @@ internal sealed class LiveMatch : IMatchObserver
             _seatTwoScore = context.SeatTwoScore;
             _isCrawford = context.IsCrawford;
             _currentGameEntries.Clear();
+
+            // A fresh game is in progress: start accumulating its raw transcript
+            // for a possible partial export. Retained until the game ends
+            // (cleared on OnGameEnded) so it holds exactly the in-flight game.
+            _partialTranscript = new Transcript();
             Broadcast(new LiveGameStartedEvent(
                 context.GameNumber, context.SeatOneScore, context.SeatTwoScore, context.IsCrawford));
         }
@@ -106,6 +152,11 @@ internal sealed class LiveMatch : IMatchObserver
         lock (_lock)
         {
             _currentGameEntries.Add(projected);
+
+            // Also retain the untouched substrate entry (native frame, no
+            // projection) so an interrupted match can export its partial game.
+            // Null-guarded only defensively: entries never arrive between games.
+            _partialTranscript?.Append(entry);
             Broadcast(new LiveEntryEvent(projected));
         }
     });
@@ -121,6 +172,11 @@ internal sealed class LiveMatch : IMatchObserver
             // current game (its entering scores, held since it started). The
             // completed game's final scores travel in this event's replay.
             _completedGames.Add(record);
+
+            // This game is now a completed record, no longer in flight: drop the
+            // partial so a between-games interruption exports no phantom trailing
+            // game (the finished game is already in _completedGames).
+            _partialTranscript = null;
             Broadcast(new LiveGameEndedEvent(replay));
         }
     });

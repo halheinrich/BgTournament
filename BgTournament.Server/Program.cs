@@ -1,4 +1,5 @@
 using System.Runtime.CompilerServices;
+using System.Text;
 using BgTournament.Api;
 using BgTournament.Server;
 
@@ -60,6 +61,31 @@ app.MapGet("/matches/{matchId}/games", (string matchId, MatchService matches) =>
             $"Match '{matchId}' is still running; watch it at /matches/{matchId}/live, "
                 + "or read its games once it ends."))
         : Results.Ok(record.ToGamesResponse());
+});
+
+// Export: a terminal match rendered as Jellyfish .MAT text, served as a
+// download. Same terminal-only gate as replay — a running match is refused,
+// pointed at the live feed. Every terminal match exports: completed and money
+// sessions carry their per-game results; a forfeited/aborted/faulted one carries
+// the games that finished, the trailing in-flight game, and a winner/reason
+// comment (MatExportProjection picks the factory). The exporter's bytes are
+// LF-only with no trailing whitespace — served verbatim (no BOM, no re-framing).
+app.MapGet("/matches/{matchId}/export.mat", IResult (string matchId, MatchService matches) =>
+{
+    if (!matches.TryGetRecord(matchId, out var record))
+    {
+        return Results.NotFound();
+    }
+
+    if (record.Status == MatchStatus.Running)
+    {
+        return Results.Conflict(new ErrorResponse(
+            $"Match '{matchId}' is still running; watch it at /matches/{matchId}/live, "
+                + "or export it once it ends."));
+    }
+
+    byte[] mat = Encoding.UTF8.GetBytes(record.ToMatText());
+    return Results.File(mat, "text/plain; charset=utf-8", $"match_{matchId}.mat");
 });
 
 // Live spectating: a Server-Sent Events feed of one match as it plays. Each

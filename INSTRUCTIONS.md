@@ -118,6 +118,7 @@ BgTournament/
     ├── ReplayEndpointTests.cs          /matches/{id}/games over TestServer, 404/409/partial
     ├── LiveMatchTests.cs               the live cache/broadcast core over its IMatchObserver surface
     ├── LiveEndpointTests.cs            /matches/{id}/live SSE end to end: ordering, forfeit, already-done
+    ├── MatExportEndpointTests.cs       /matches/{id}/export.mat: golden, money, forfeit/aborted/faulted, 404/409
     ├── TournamentCoreTests.cs          domain pins: schedule, seeds, tie-break ladder
     ├── TournamentServerTests.cs        tournament claims, validation, forfeit folding
     └── TournamentSmokeTests.cs         3-engine round-robin over the wire to a winner
@@ -301,6 +302,23 @@ forfeited/faulted match keeps the games that finished before the break.
 Spectating is invisible on the wire: PROTOCOL.md stays at v1, engines see
 nothing.
 
+**Export shape.** `GET /matches/{matchId}/export.mat` serves a terminal match as
+Jellyfish `.MAT` text — a `text/plain` attachment (`match_{id}.mat`). The bytes
+come straight from BgMatchFormat_Lib (`MatExporter.Export`, LF-only, no trailing
+whitespace) and are served verbatim; BgTournament.Api stays out of it (this is
+text, not a JSON contract). `MatExportProjection` is the counterpart of
+`ReplayProjection`: it maps the record onto the exporter's factory choice —
+Completed length > 0 → `ForMatch`, Completed length 0 → `ForMoneySession`,
+Forfeited → `ForForfeit` (the non-forfeiting seat wins, read off the same
+`ForfeitedBy` taxonomy), Aborted/Faulted → `ForAbandoned` (winner-less, with a
+one-line reason from the status). Engine names map to Player 1/2 on the same
+absolute seat convention as replay, and `matchId` rides a `Match ID` header tag.
+The completed games are the retained replay source; a forfeited/aborted/faulted
+match also carries its trailing in-flight game, which `LiveMatch` now retains as
+the untouched substrate `Transcript` (the replay projections stay seat-One-frame
+API shapes; the export needs the raw substrate frame). Same terminal-only gate
+as replay: a running match answers 409 pointed at `/live`.
+
 **Client shape.** `EngineClient.ServeAsync(WebSocket)` is the transport seam
 (any socket source, in-proc test servers included); `RunAsync(Uri)` wraps it
 with a `ClientWebSocket`. No perspective work client-side — the unified frame
@@ -473,6 +491,7 @@ public sealed record LiveTerminalEvent(MatchSummary Match) : LiveMatchEvent;   /
 //   GET  /matches/{matchId}                record summary (status, winner, scores, forfeit info)
 //   GET  /matches/{matchId}/games          terminal match's replay, partial if interrupted (409 while running)
 //   GET  /matches/{matchId}/live           text/event-stream: snapshot → per-move → terminal
+//   GET  /matches/{matchId}/export.mat     terminal match as Jellyfish .MAT text (attachment; 409 while running)
 //   POST /tournaments                      {participants[], matchLength, matchesPerPairing, seed?}
 //   GET  /tournaments                      every tournament record, creation order
 //   GET  /tournaments/{tournamentId}       status, standings, winner, per-match ledger (ids

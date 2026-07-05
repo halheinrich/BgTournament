@@ -19,6 +19,7 @@
   <ItemGroup>
     <ProjectReference Include="..\..\BgDataTypes_Lib\BgDataTypes_Lib\BgDataTypes_Lib.csproj" />
     <ProjectReference Include="..\..\BgGame_Lib\BgGame_Lib\BgGame_Lib.csproj" />
+    <ProjectReference Include="..\..\BgMatchFormat_Lib\BgMatchFormat_Lib\BgMatchFormat_Lib.csproj" />
     <ProjectReference Include="..\..\BgMoveGen\BgMoveGen\BgMoveGen.csproj" />
     <ProjectReference Include="..\BgTournament.Api\BgTournament.Api.csproj" />
     <ProjectReference Include="..\BgTournament.Core\BgTournament.Core.csproj" />
