@@ -38,6 +38,7 @@ internal static class ApiMapping
             record.SeatOneScore,
             record.SeatTwoScore,
             record.ForfeitedBy,
+            record.ForfeitCause is { } cause ? ToApiForfeitCause(cause) : null,
             record.Detail,
             record.StartedAtUtc,
             record.EndedAtUtc);

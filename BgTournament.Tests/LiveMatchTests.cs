@@ -170,7 +170,7 @@ public class LiveMatchTests
             "match-under-test", "Alpha", "Beta", MatchLength: 1, MaxGames: null, Seed: 7,
             TimeControl: null,
             MatchStatus.Completed, Winner: "Alpha", SeatOneScore: 1, SeatTwoScore: 0,
-            ForfeitedBy: null, Detail: null,
+            ForfeitedBy: null, ForfeitCause: null, Detail: null,
             StartedAtUtc: DateTimeOffset.UnixEpoch, EndedAtUtc: DateTimeOffset.UnixEpoch);
         live.MarkTerminal(summary);
 
@@ -189,7 +189,7 @@ public class LiveMatchTests
             "match-under-test", "Alpha", "Beta", MatchLength: 1, MaxGames: null, Seed: 7,
             TimeControl: null,
             MatchStatus.Completed, Winner: "Beta", SeatOneScore: 0, SeatTwoScore: 1,
-            ForfeitedBy: null, Detail: null,
+            ForfeitedBy: null, ForfeitCause: null, Detail: null,
             StartedAtUtc: DateTimeOffset.UnixEpoch, EndedAtUtc: DateTimeOffset.UnixEpoch);
         live.MarkTerminal(summary);
 
@@ -227,7 +227,8 @@ public class LiveMatchTests
             "match-under-test", "Alpha", "Beta", MatchLength: 3, MaxGames: null, Seed: 7,
             TimeControl: null,
             MatchStatus.Forfeited, Winner: "Alpha", SeatOneScore: null, SeatTwoScore: null,
-            ForfeitedBy: "Beta", Detail: "Engine 'Beta' disconnected mid-match.",
+            ForfeitedBy: "Beta", BgTournament.Api.ForfeitCause.Disconnect,
+            Detail: "Engine 'Beta' disconnected mid-match.",
             StartedAtUtc: DateTimeOffset.UnixEpoch, EndedAtUtc: DateTimeOffset.UnixEpoch);
         live.MarkTerminal(summary);
         Assert.IsType<LiveTerminalEvent>(await NextAsync(subscription));

@@ -97,9 +97,9 @@ public class ApiGoldenTests
                 "match-1", "Alpha", "Beta", MatchLength: 7, MaxGames: null, Seed: 42,
                 TimeControl: null,
                 MatchStatus.Running, Winner: null, SeatOneScore: null, SeatTwoScore: null,
-                ForfeitedBy: null, Detail: null,
+                ForfeitedBy: null, ForfeitCause: null, Detail: null,
                 StartedAtUtc: StartedAt, EndedAtUtc: null),
-            """{"matchId":"match-1","engineOne":"Alpha","engineTwo":"Beta","matchLength":7,"maxGames":null,"seed":42,"timeControl":null,"status":"running","winner":null,"seatOneScore":null,"seatTwoScore":null,"forfeitedBy":null,"detail":null,"startedAtUtc":"2026-07-05T12:00:00+00:00","endedAtUtc":null}""");
+            """{"matchId":"match-1","engineOne":"Alpha","engineTwo":"Beta","matchLength":7,"maxGames":null,"seed":42,"timeControl":null,"status":"running","winner":null,"seatOneScore":null,"seatTwoScore":null,"forfeitedBy":null,"forfeitCause":null,"detail":null,"startedAtUtc":"2026-07-05T12:00:00+00:00","endedAtUtc":null}""");
 
     [Fact]
     public void MatchSummary_Completed() =>
@@ -108,9 +108,9 @@ public class ApiGoldenTests
                 "match-1", "Alpha", "Beta", MatchLength: 3, MaxGames: null, Seed: 42,
                 TimeControl: new TimeControl(120, 8),
                 MatchStatus.Completed, Winner: "Alpha", SeatOneScore: 3, SeatTwoScore: 1,
-                ForfeitedBy: null, Detail: null,
+                ForfeitedBy: null, ForfeitCause: null, Detail: null,
                 StartedAtUtc: StartedAt, EndedAtUtc: EndedAt),
-            """{"matchId":"match-1","engineOne":"Alpha","engineTwo":"Beta","matchLength":3,"maxGames":null,"seed":42,"timeControl":{"initialSeconds":120,"incrementSeconds":8},"status":"completed","winner":"Alpha","seatOneScore":3,"seatTwoScore":1,"forfeitedBy":null,"detail":null,"startedAtUtc":"2026-07-05T12:00:00+00:00","endedAtUtc":"2026-07-05T12:30:00+00:00"}""");
+            """{"matchId":"match-1","engineOne":"Alpha","engineTwo":"Beta","matchLength":3,"maxGames":null,"seed":42,"timeControl":{"initialSeconds":120,"incrementSeconds":8},"status":"completed","winner":"Alpha","seatOneScore":3,"seatTwoScore":1,"forfeitedBy":null,"forfeitCause":null,"detail":null,"startedAtUtc":"2026-07-05T12:00:00+00:00","endedAtUtc":"2026-07-05T12:30:00+00:00"}""");
 
     [Fact]
     public void MatchSummary_Forfeited() =>
@@ -119,9 +119,9 @@ public class ApiGoldenTests
                 "match-1", "Alpha", "Beta", MatchLength: 3, MaxGames: null, Seed: 42,
                 TimeControl: null,
                 MatchStatus.Forfeited, Winner: "Beta", SeatOneScore: null, SeatTwoScore: null,
-                ForfeitedBy: "Alpha", Detail: "Engine 'Alpha' disconnected mid-match.",
+                ForfeitedBy: "Alpha", ForfeitCause.Disconnect, Detail: "Engine 'Alpha' disconnected mid-match.",
                 StartedAtUtc: StartedAt, EndedAtUtc: EndedAt),
-            """{"matchId":"match-1","engineOne":"Alpha","engineTwo":"Beta","matchLength":3,"maxGames":null,"seed":42,"timeControl":null,"status":"forfeited","winner":"Beta","seatOneScore":null,"seatTwoScore":null,"forfeitedBy":"Alpha","detail":"Engine \u0027Alpha\u0027 disconnected mid-match.","startedAtUtc":"2026-07-05T12:00:00+00:00","endedAtUtc":"2026-07-05T12:30:00+00:00"}""");
+            """{"matchId":"match-1","engineOne":"Alpha","engineTwo":"Beta","matchLength":3,"maxGames":null,"seed":42,"timeControl":null,"status":"forfeited","winner":"Beta","seatOneScore":null,"seatTwoScore":null,"forfeitedBy":"Alpha","forfeitCause":"disconnect","detail":"Engine \u0027Alpha\u0027 disconnected mid-match.","startedAtUtc":"2026-07-05T12:00:00+00:00","endedAtUtc":"2026-07-05T12:30:00+00:00"}""");
 
     /// <summary>
     /// The rehydrated-orphan shape: a terminal status with no end time — the
@@ -134,10 +134,10 @@ public class ApiGoldenTests
                 "match-1", "Alpha", "Beta", MatchLength: 3, MaxGames: null, Seed: 42,
                 TimeControl: null,
                 MatchStatus.Interrupted, Winner: null, SeatOneScore: null, SeatTwoScore: null,
-                ForfeitedBy: null,
+                ForfeitedBy: null, ForfeitCause: null,
                 Detail: "The server was interrupted while this match was running; the record was reconstructed from its journal.",
                 StartedAtUtc: StartedAt, EndedAtUtc: null),
-            """{"matchId":"match-1","engineOne":"Alpha","engineTwo":"Beta","matchLength":3,"maxGames":null,"seed":42,"timeControl":null,"status":"interrupted","winner":null,"seatOneScore":null,"seatTwoScore":null,"forfeitedBy":null,"detail":"The server was interrupted while this match was running; the record was reconstructed from its journal.","startedAtUtc":"2026-07-05T12:00:00+00:00","endedAtUtc":null}""");
+            """{"matchId":"match-1","engineOne":"Alpha","engineTwo":"Beta","matchLength":3,"maxGames":null,"seed":42,"timeControl":null,"status":"interrupted","winner":null,"seatOneScore":null,"seatTwoScore":null,"forfeitedBy":null,"forfeitCause":null,"detail":"The server was interrupted while this match was running; the record was reconstructed from its journal.","startedAtUtc":"2026-07-05T12:00:00+00:00","endedAtUtc":null}""");
 
     [Fact]
     public void StartTournamentRequest_Golden() =>
@@ -326,9 +326,9 @@ public class ApiGoldenTests
                 "match-1", "Alpha", "Beta", MatchLength: 3, MaxGames: null, Seed: 42,
                 TimeControl: null,
                 MatchStatus.Completed, Winner: "Alpha", SeatOneScore: 3, SeatTwoScore: 1,
-                ForfeitedBy: null, Detail: null,
+                ForfeitedBy: null, ForfeitCause: null, Detail: null,
                 StartedAtUtc: StartedAt, EndedAtUtc: EndedAt)),
-            """{"type":"terminal","match":{"matchId":"match-1","engineOne":"Alpha","engineTwo":"Beta","matchLength":3,"maxGames":null,"seed":42,"timeControl":null,"status":"completed","winner":"Alpha","seatOneScore":3,"seatTwoScore":1,"forfeitedBy":null,"detail":null,"startedAtUtc":"2026-07-05T12:00:00+00:00","endedAtUtc":"2026-07-05T12:30:00+00:00"}}""");
+            """{"type":"terminal","match":{"matchId":"match-1","engineOne":"Alpha","engineTwo":"Beta","matchLength":3,"maxGames":null,"seed":42,"timeControl":null,"status":"completed","winner":"Alpha","seatOneScore":3,"seatTwoScore":1,"forfeitedBy":null,"forfeitCause":null,"detail":null,"startedAtUtc":"2026-07-05T12:00:00+00:00","endedAtUtc":"2026-07-05T12:30:00+00:00"}}""");
 
     // ---- the audit contract (GET /matches/{matchId}/audit) ----
 

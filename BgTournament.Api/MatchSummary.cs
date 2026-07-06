@@ -13,6 +13,7 @@ namespace BgTournament.Api;
 /// <param name="SeatOneScore">Seat One's final points; null until the match completes naturally.</param>
 /// <param name="SeatTwoScore">Seat Two's final points; null until the match completes naturally.</param>
 /// <param name="ForfeitedBy">Forfeiting engine's name; null unless <paramref name="Status"/> is <see cref="MatchStatus.Forfeited"/>.</param>
+/// <param name="ForfeitCause">The structured cause of the forfeit; null unless <paramref name="Status"/> is <see cref="MatchStatus.Forfeited"/>. Consumers read this instead of parsing <paramref name="Detail"/>, which stays the human-readable companion.</param>
 /// <param name="Detail">Human-readable outcome detail (forfeit cause, abort reason).</param>
 /// <param name="StartedAtUtc">When the server created and began hosting the match (UTC).</param>
 /// <param name="EndedAtUtc">When the match reached its terminal status (UTC); null while running — and null on an <see cref="MatchStatus.Interrupted"/> record, whose true end time died with the server.</param>
@@ -29,6 +30,7 @@ public sealed record MatchSummary(
     int? SeatOneScore,
     int? SeatTwoScore,
     string? ForfeitedBy,
+    ForfeitCause? ForfeitCause,
     string? Detail,
     DateTimeOffset StartedAtUtc,
     DateTimeOffset? EndedAtUtc);
