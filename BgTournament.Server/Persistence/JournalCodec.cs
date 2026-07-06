@@ -22,11 +22,36 @@ namespace BgTournament.Server.Persistence;
 internal static class JournalCodec
 {
     /// <summary>
-    /// The journal schema version this server writes. Carried once per file,
-    /// on the header (first) event; rehydration rejects a file whose version
-    /// it does not know before folding anything from it.
+    /// The match/tournament journal schema version this server writes. Carried
+    /// once per file, on the header (first) event; rehydration rejects a file
+    /// whose version it does not know before folding anything from it.
+    /// Version 2 added the match-journal arbitration evidence
+    /// (<see cref="MatchClockEvent"/>, <see cref="MatchLateReplyEvent"/>) —
+    /// a new event type is a schema change here, not a wire-style additive
+    /// field: this codec is deliberately strict, so an unknown discriminator
+    /// under an old stamp would read as corruption, not tolerance.
     /// </summary>
-    public const int SchemaVersion = 1;
+    public const int SchemaVersion = 2;
+
+    /// <summary>
+    /// The oldest match/tournament schema version this server still folds.
+    /// Every version in [<see cref="MinSchemaVersion"/>, <see cref="SchemaVersion"/>]
+    /// is a subset of today's vocabulary, so one fold path reads them all;
+    /// files older than this (none exist yet) would need a conscious
+    /// migration story.
+    /// </summary>
+    public const int MinSchemaVersion = 1;
+
+    /// <summary>
+    /// The server-journal schema version — versioned independently of the
+    /// match/tournament format: the kinds are separate durable formats and
+    /// evolve on their own clocks.
+    /// </summary>
+    public const int ServerSchemaVersion = 1;
+
+    /// <summary>Whether this server can fold a match/tournament journal stamped <paramref name="schemaVersion"/>.</summary>
+    public static bool IsSupported(int schemaVersion) =>
+        schemaVersion >= MinSchemaVersion && schemaVersion <= SchemaVersion;
 
     /// <summary>
     /// Journal conventions: camelCase properties, enums as the strings pinned
@@ -56,6 +81,14 @@ internal static class JournalCodec
         return JsonSerializer.Serialize(journalEvent, Options);
     }
 
+    /// <summary>Serialize a server-journal event to its JSONL line (one JSON object, no indentation).</summary>
+    /// <exception cref="ArgumentNullException"><paramref name="journalEvent"/> is null.</exception>
+    public static string Serialize(ServerJournalEvent journalEvent)
+    {
+        ArgumentNullException.ThrowIfNull(journalEvent);
+        return JsonSerializer.Serialize(journalEvent, Options);
+    }
+
     /// <summary>
     /// Deserialize one match-journal line. Any malformed line — invalid JSON,
     /// JSON <c>null</c>, a missing or unknown <c>"type"</c>, a missing
@@ -76,6 +109,15 @@ internal static class JournalCodec
     /// <exception cref="JsonException">The line is not a well-formed tournament-journal event.</exception>
     public static TournamentJournalEvent DeserializeTournamentEvent(string line) =>
         Deserialize<TournamentJournalEvent>(line);
+
+    /// <summary>
+    /// Deserialize one server-journal line; the same single
+    /// <see cref="JsonException"/> funnel as <see cref="DeserializeMatchEvent"/>.
+    /// </summary>
+    /// <exception cref="ArgumentNullException"><paramref name="line"/> is null.</exception>
+    /// <exception cref="JsonException">The line is not a well-formed server-journal event.</exception>
+    public static ServerJournalEvent DeserializeServerEvent(string line) =>
+        Deserialize<ServerJournalEvent>(line);
 
     private static TEvent Deserialize<TEvent>(string line) where TEvent : class
     {

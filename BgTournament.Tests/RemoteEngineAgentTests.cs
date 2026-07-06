@@ -241,7 +241,7 @@ public class RemoteEngineAgentTests
         var clock = new MatchClock(new TimeControl(120, 8), time);
 
         // Give seat One an answered decision first, so the pools differ.
-        using (var decision = clock.StartDecision(MatchSeat.One))
+        using (var decision = clock.StartDecision(MatchSeat.One, DecisionKind.Play))
         {
             decision.MarkAnswered();
         }

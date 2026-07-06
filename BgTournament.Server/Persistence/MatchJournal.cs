@@ -57,6 +57,24 @@ internal sealed class MatchJournal : IMatchObserver
     public void RecordStarted() =>
         Append(() => new MatchStartedEvent(_time.GetUtcNow()));
 
+    /// <summary>
+    /// Journal one settled clocked decision (the per-decision arbitration
+    /// evidence). Called from the clock's settlement callback on the match
+    /// loop — before the runner records the resulting transcript entry, which
+    /// is the ordering the event's readers rely on.
+    /// </summary>
+    public void RecordClockDecision(ClockDecisionSettlement settlement) =>
+        Append(() => JournalMapping.ToEvent(settlement, _time.GetUtcNow()));
+
+    /// <summary>
+    /// Journal a discarded late reply to an abandoned query — the benign race,
+    /// made visible. Called from the connection's receive loop (not the match
+    /// loop); safe because the writer channel is multi-writer and a discard
+    /// racing past match end lands in a completed writer and is dropped.
+    /// </summary>
+    public void RecordLateReply(MatchSeat seat, string requestId) =>
+        Append(() => JournalMapping.ToLateReplyEvent(seat, requestId, _time.GetUtcNow()));
+
     /// <inheritdoc/>
     public void OnGameStarted(GameStartContext context) =>
         Append(() => JournalMapping.ToEvent(context, _time.GetUtcNow()));

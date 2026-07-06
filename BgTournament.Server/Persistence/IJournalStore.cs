@@ -8,6 +8,9 @@ internal enum JournalKind
 
     /// <summary>A per-tournament journal.</summary>
     Tournament,
+
+    /// <summary>A per-server-session journal segment (engine lifecycle evidence).</summary>
+    Server,
 }
 
 /// <summary>

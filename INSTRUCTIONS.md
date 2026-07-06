@@ -70,7 +70,10 @@ BgTournament/
 │   ├── GamePosition.cs / PlayMove.cs   seat-One-frame position; mover-relative move
 │   ├── GameEntry.cs                    "type"-discriminated union: play/cubeOffer/cubeResponse
 │   ├── GameReplay.cs / MatchGamesResponse.cs   per-game replay + the endpoint envelope
-│   └── LiveMatchEvent.cs               live-feed envelope union: snapshot/gameStarted/entry/gameEnded/terminal
+│   ├── LiveMatchEvent.cs               live-feed envelope union: snapshot/gameStarted/entry/gameEnded/terminal
+│   ├── ForfeitCause.cs / DecisionKind.cs       audit vocabularies (structured cause; timed-decision kind)
+│   ├── AuditEvent.cs                   audit-timeline union (the fourth event family; no boards/moves)
+│   └── MatchAuditResponse.cs           the audit endpoint envelope (status + integrity + events)
 ├── BgTournament.Core/                  execution-blind tournament domain (zero dependencies)
 │   ├── TournamentFormat.cs             round-robin config: matchLength × matchesPerPairing
 │   ├── ScheduledMatch.cs               one schedule row: seats + the derived dice seed
@@ -84,9 +87,10 @@ BgTournament/
 │   ├── RemoteEngineAgent.cs            IPlayAgent+ICubeAgent over the channel; taxonomy
 │   ├── PlayResolver.cs                 wire play → canonical hit-encoded candidate
 │   ├── CountingDiceSource.cs           IDiceSource wrapper counting rolls (fair-mode play-query roll index)
-│   ├── MatchClock.cs                   per-match Fischer clock over the TimeProvider seam
+│   ├── MatchClock.cs                   per-match Fischer clock over the TimeProvider seam; settlement reports
+│   ├── DecisionKind.cs                 the server's one decision vocabulary (clock evidence + query labels)
 │   ├── EngineRegistry.cs               sessions by name; per-engine busy flag
-│   ├── MatchService.cs                 match host: attribution, forfeits, records
+│   ├── MatchService.cs                 match host: attribution, forfeits, records, journal-settled gate
 │   ├── TournamentService.cs            tournament host: claims, orchestration, folding
 │   ├── EngineFailureExceptions.cs      timeout / disconnected / protocol-violation
 │   ├── ForfeitCause.cs                 the structured forfeit taxonomy the journal records
@@ -94,19 +98,23 @@ BgTournament/
 │   ├── ApiMapping.cs                   the ONLY server-internal → Api projections
 │   ├── ReplayProjection.cs             transcript → replay contract: stamped-seat read + flip
 │   ├── MatExportProjection.cs          record → MatExporter factory choice (.MAT surface)
+│   ├── AuditProjection.cs              journal → audit contract: the arbitration timeline walk
 │   ├── LiveMatch.cs                    per-match live cache + SSE broadcast (the IMatchObserver adapter)
 │   ├── CompositeMatchObserver.cs       fans the runner's callbacks to LiveMatch + MatchJournal
-│   └── Persistence/                    the durable records journal (Arc 9; Arc 10 reads this vocabulary)
+│   └── Persistence/                    the durable records journal (Arc 9) + arbitration log (Arc 10)
 │       ├── MatchJournalEvent.cs        match-journal DTO union ("type"-discriminated JSONL lines)
 │       ├── TournamentJournalEvent.cs   tournament-journal DTO union
+│       ├── ServerJournalEvent.cs       server-journal DTO union (engine lifecycle evidence)
 │       ├── JournalShapes.cs            journal-local enums/shapes (never Api or substrate enums)
-│       ├── JournalCodec.cs             SchemaVersion + the ONLY journal (de)serialization path
+│       ├── JournalCodec.cs             schema versions + the ONLY journal (de)serialization path
 │       ├── JournalMapping.cs           the ONLY substrate/server ↔ journal correspondences (both ways)
 │       ├── IJournalStore.cs            the store seam: raw sinks/sources by kind + id
-│       ├── FileJournalStore.cs         <DataDirectory>/matches|tournaments/<id>.jsonl
+│       ├── FileJournalStore.cs         <DataDirectory>/matches|tournaments|server/<id>.jsonl
 │       ├── JournalWriter.cs            per-journal channel + background pump; flush per event
+│       ├── JournalReader.cs            the one read policy: torn-tail / corruption trusted-prefix parse
 │       ├── MatchJournal.cs             the write-through IMatchObserver sibling of LiveMatch
 │       ├── TournamentJournal.cs        created / matchStarted / result / terminal
+│       ├── ServerJournal.cs            hosted per-boot segment: started/connect/disconnect/reject/stopped
 │       ├── JournalRehydrator.cs        startup fold: journals → records, before endpoints serve
 │       └── PersistenceOptions.cs       Persistence:DataDirectory (appsettings)
 ├── BgTournament.EngineClient/          .NET SDK + reference bot
@@ -144,9 +152,13 @@ BgTournament/
     ├── TournamentCoreTests.cs          domain pins: schedule, seeds, tie-break ladder
     ├── TournamentServerTests.cs        tournament claims, validation, forfeit folding
     ├── TournamentSmokeTests.cs         3-engine round-robin over the wire to a winner
-    ├── JournalGoldenTests.cs           byte-for-byte journal-event pins, every event + enum
+    ├── JournalGoldenTests.cs           byte-for-byte journal-event pins, every event + enum (all three kinds)
     ├── JournalMappingTests.cs          substrate ↔ journal fidelity round trips (hits, frames, taxonomy)
-    └── RehydrationTests.cs             restart identity, torn tail, corruption, fair-dice evidence
+    ├── RehydrationTests.cs             restart identity, torn tail, corruption, fair-dice evidence,
+    │                                   v1 tolerance, evidence-ignored fold, unknown-version skip
+    ├── AuditEndpointTests.cs           /matches/{id}/audit: replay join, clock trail, fair packet,
+    │                                   deterministic drain gate, damage surfaces, late-reply hook pin
+    └── ServerJournalTests.cs           segment per boot; connect/disconnect/reject/stopped evidence
 ```
 
 ## Architecture
@@ -408,6 +420,42 @@ ordinal-id tiebreak. Tournament resume-after-restart is deliberately not
 implemented (the journaled results enable it later); an interrupted
 tournament's finished matches remain fully served records.
 
+**Arbitration log (the journal as evidence, and its read surface).** Arc 10
+extends the Arc 9 journal into the arbitration record. Match journals (schema
+v2; v1 files fold forever) gain two evidence-only event types the fold
+ignores: `clock` — one per settled clocked decision, written from
+`MatchClock`'s settlement callback (seat, decision kind, measured think,
+increment credited, pool before/after; the clock stays the one measurement
+SSOT, flat-regime matches measure nothing) — and `lateReply`, raised by
+`EngineConnection.LateReplyDiscarded` when the benign §8 race discards a
+reply to an abandoned query (proof the engine answered, too late to count).
+Ordering is part of the vocabulary: a clock event precedes the entry it
+timed; a `cubeOffer` clock event with no cube entry was a declined double
+window (think time replay elides); a trailing clock event is the decision
+that ended the match; a dance is a play entry with no clock event (never
+queried). A new **server journal** (`server/<id>.jsonl`, one segment per
+boot, independently versioned) records engine lifecycle — `started` header,
+`engineConnected`/`engineDisconnected`, `handshakeRejected` with the exact
+wire reason (one funnel in `EngineSocketEndpoint`), and a graceful `stopped`
+marker whose absence is crash evidence. It is deliberately **evidence-only**:
+sessions are ephemeral, nothing rehydrates from it. The read surface is
+`GET /matches/{matchId}/audit` — new `BgTournament.Api` audit DTOs (the
+fourth event family) projected by `AuditProjection` over the journal's
+trusted prefix (`JournalReader`, the parse-policy SSOT shared with
+rehydration) at **arbitration altitude**: timestamps, attribution, causes,
+clock arithmetic; no boards or moves — game number + entry index join to
+replay. The structured `ForfeitCause` rides the terminal audit event, which
+is **record-derived** (skipping the journal's terminal line): identical
+content for a folded terminal, and the only truthful close for Interrupted —
+`at` honestly null, the escrowed fair-dice key revealed. Fair mode makes the
+response a self-contained verification packet: `created` carries the derived
+commitment (never stored — `MatchRecord.Commitment`, the wire's own
+derivation) + algorithm, play events carry the rolls, `terminal` reveals the
+key. Refusals mirror replay (404 unknown; 409-to-`/live` while Running), and
+the endpoint awaits `MatchRecord.JournalSettled` — completed unconditionally
+on every finalize path — so a read never races the journal drain. Wire
+untouched: PROTOCOL.md stays v1; engines see none of this.
+
 **Client shape.** `EngineClient.ServeAsync(WebSocket)` is the transport seam
 (any socket source, in-proc test servers included); `RunAsync(Uri)` wraps it
 with a `ClientWebSocket`. No perspective work client-side — the unified frame
@@ -590,6 +638,33 @@ public sealed record LiveEntryEvent(GameEntry Entry) : LiveMatchEvent;         /
 public sealed record LiveGameEndedEvent(GameReplay Game) : LiveMatchEvent;     // "gameEnded" (canonical game)
 public sealed record LiveTerminalEvent(MatchSummary Match) : LiveMatchEvent;   // "terminal" (final record, then close)
 
+// Audit (GET /matches/{matchId}/audit) — the arbitration timeline: the fourth
+// event family (wire / journal / replay / audit), at arbitration altitude —
+// no boards or moves; join to replay by GameNumber + EntryIndex.
+public enum ForfeitCause { ContractViolation, Timeout, FlagFall, Disconnect, NeverConnected }
+public enum DecisionKind { Play, CubeOffer, CubeResponse }
+public sealed record MatchAuditResponse(                     // the endpoint envelope
+    string MatchId, string EngineOne, string EngineTwo,
+    MatchStatus Status,                                      // the record's truth (terminal-only)
+    string? Integrity,                                       // corruption note; null when whole
+    IReadOnlyList<AuditEvent> Events);                       // last event is always "terminal"
+public abstract record AuditEvent(DateTimeOffset? At);      // "type"-discriminated; At null only on
+                                                            // an Interrupted match's terminal event:
+public sealed record AuditCreatedEvent(..., string? DiceAlgorithm,          // "created" — fair mode:
+    string? DiceCommitment, TimeControl? TimeControl);                      //   derived commitment (never stored)
+public sealed record AuditStartedEvent(...);                                // "started"
+public sealed record AuditGameStartedEvent(...);                            // "gameStarted"
+public sealed record AuditPlayEvent(..., Seat Actor, int Die1, int Die2);   // "play" (roll evidence)
+public sealed record AuditCubeOfferEvent(..., Seat Actor);                  // "cubeOffer"
+public sealed record AuditCubeResponseEvent(..., CubeResponseAction Action);// "cubeResponse"
+public sealed record AuditGameEndedEvent(..., Seat Winner, ...);            // "gameEnded"
+public sealed record AuditClockEvent(..., Seat Seat, DecisionKind Decision, // "clock" — per settled
+    double ThinkSeconds, bool IncrementCredited,                            //   clocked decision;
+    double RemainingBeforeSeconds, double RemainingAfterSeconds);           //   precedes its entry
+public sealed record AuditLateReplyEvent(..., Seat Seat, string RequestId); // "lateReply" (the §8 race)
+public sealed record AuditTerminalEvent(..., MatchStatus Status,            // "terminal" — record-derived;
+    ForfeitCause? ForfeitCause, ..., string? DiceKey);                      //   fair mode reveals the key
+
 // BgTournament.Server — an application, not a library: all types internal.
 // Its API is the wire protocol (PROTOCOL.md) plus the admin HTTP surface
 // (shapes: BgTournament.Api; errors carry ErrorResponse):
@@ -600,6 +675,7 @@ public sealed record LiveTerminalEvent(MatchSummary Match) : LiveMatchEvent;   /
 //   GET  /matches/{matchId}/games          terminal match's replay, partial if interrupted (409 while running)
 //   GET  /matches/{matchId}/live           text/event-stream: snapshot → per-move → terminal
 //   GET  /matches/{matchId}/export.mat     terminal match as Jellyfish .MAT text (attachment; 409 while running)
+//   GET  /matches/{matchId}/audit          terminal match's arbitration timeline (409 while running)
 //   POST /tournaments                      {participants[], matchLength, matchesPerPairing, seed?, timeControl?}
 //   GET  /tournaments                      every tournament record, creation order
 //   GET  /tournaments/{tournamentId}       status, standings, winner, per-match ledger (ids
@@ -607,8 +683,8 @@ public sealed record LiveTerminalEvent(MatchSummary Match) : LiveMatchEvent;   /
 // Config: Tournament:DecisionTimeoutSeconds (default 30; flat regime only — a
 // timeControl replaces it), Tournament:HandshakeTimeoutSeconds (10),
 // Persistence:DataDirectory (default "data" under the content root; the durable
-// journals live in matches/ and tournaments/ beneath it, and fair-mode dice
-// keys are escrowed there — the directory shares the server's trust domain).
+// journals live in matches/, tournaments/, and server/ beneath it, and fair-mode
+// dice keys are escrowed there — the directory shares the server's trust domain).
 ```
 
 ## Pitfalls
@@ -735,11 +811,19 @@ public sealed record LiveTerminalEvent(MatchSummary Match) : LiveMatchEvent;   /
 - **The journal format is durable — a byte change orphans files already on
   disk.** `JournalGoldenTests` pins every event and enum string; a deliberate
   change bumps `JournalCodec.SchemaVersion` and decides the migration story
-  consciously (rehydration skips unknown versions loudly). That is also why
-  journal DTOs use journal-local enums, never the Api or substrate ones: an
-  Api rename must never silently rewrite the durable format. Serialize only
+  consciously. Rehydration accepts the [`MinSchemaVersion`, `SchemaVersion`]
+  range — old files fold forever — and skips unknown versions loudly. A **new
+  event type is a schema change here**, not a wire-style additive field: the
+  codec is deliberately strict, so an unknown discriminator under an old
+  stamp reads as corruption to an old reader (that is why the Arc 10 evidence
+  events came with the v1→v2 bump; the wire's additive-under-v1 precedent
+  does not transfer). The server journal versions independently
+  (`ServerSchemaVersion`) — the kinds are separate durable formats. Journal
+  DTOs use journal-local enums, never the Api or substrate ones: an Api
+  rename must never silently rewrite the durable format. Serialize only
   through `JournalCodec` (same discriminator footgun as `WireProtocol`), map
-  only through `JournalMapping`.
+  only through `JournalMapping`, parse files only through `JournalReader`
+  (the one torn-tail/corruption policy, shared by rehydration and audit).
 - **Journal observer callbacks obey the live-feed rule.** `MatchJournal`'s
   `IMatchObserver` callbacks run synchronously on the match loop: fast
   in-memory mapping + a non-blocking channel write, never awaiting, doing I/O,
@@ -767,6 +851,33 @@ public sealed record LiveTerminalEvent(MatchSummary Match) : LiveMatchEvent;   /
   terminal, `MarkTerminal`'d, and journal-less (`Journal` null — the file on
   disk already is their complete history). Nothing may rehydrate to Running,
   and nothing may append to a rehydrated journal.
+- **Clock evidence events obey an ordering vocabulary — and only clocked
+  matches have them.** A `clock` event is journaled at settlement, *before*
+  the runner records the resulting transcript entry; audit readers rely on
+  the three corollaries (declined double window = `cubeOffer` clock with no
+  cube entry; trailing clock = the fatal decision; dance = play entry with no
+  clock event, the engine was never queried). Don't journal the settlement
+  anywhere but the `MatchClock` callback (the one measurement SSOT), and
+  don't invent flat-regime timing — the flat regime measures nothing.
+- **The server journal is evidence-only — never rehydrate it.** Sessions are
+  ephemeral; the registry is live state alone. One segment per boot keeps the
+  store's create-once contract; the `stopped` marker's *absence* is the crash
+  evidence, so never write it anywhere but graceful shutdown.
+- **The terminal audit event is record-derived; the audit read waits on
+  `JournalSettled`.** `AuditProjection` skips the journal's terminal line and
+  closes the timeline from the `MatchRecord` (identical for a folded
+  terminal; the only truthful close for Interrupted, which also revealed the
+  escrowed key there). Don't re-read the terminal from the file — and don't
+  remove the endpoint's `await record.JournalSettled`: a match turns terminal
+  before its journal drains, and without the gate an immediate read serves a
+  short file. `MarkJournalSettled` completes **unconditionally** on every
+  finalize path — a gate left pending turns a millisecond race into a hung
+  request, strictly worse than the short read it prevents.
+- **The derived dice commitment must stay derived.** The audit `created`
+  event's commitment comes from `MatchRecord.Commitment` (the same
+  `DiceKey.Commit` + context path `matchStarted` used) — never store it in
+  the journal or derive it a second way; the no-drift pin is the wire↔audit
+  byte equality in `AuditEndpointTests`.
 
 ## Subproject-internal next steps
 
@@ -784,9 +895,11 @@ public sealed record LiveTerminalEvent(MatchSummary Match) : LiveMatchEvent;   /
 - **Runnable reference-bot executable** — a small console host over
   `EngineClient` + the reference bot, for connecting to a remote server the
   way third parties will (the SDK and bot are library-only today).
-- **Unit-level pin for the late-reply discard** — the benign race is
-  integration-shaped today; a focused `EngineConnection` test over an in-proc
-  socket pair would pin the discard-once semantics directly.
+- **Flat-regime decision timing** — the arbitration log's `clock` events
+  exist only for clocked matches, because `MatchClock` is the one measurement
+  seam. Giving flat-regime matches per-decision think-time evidence would
+  need a regime-neutral measurement scope; a candidate if arbitration ever
+  needs it there.
 - **Per-match timeout override** — `POST /matches` could carry an optional
   decision timeout; global-only configuration today. (A Fischer `timeControl`
   already gives per-match timing; this item is about the flat regime.)
@@ -799,8 +912,12 @@ public sealed record LiveTerminalEvent(MatchSummary Match) : LiveMatchEvent;   /
   re-resolving a participant by name at each scheduled match (so a
   reconnected engine plays on) is a candidate once real remote engines flake.
 - **Journal retention policy** — journals accumulate forever (one small file
-  per match); nothing prunes or archives. Fine at hobby scale; revisit when
-  the data directory's growth is ever noticed.
+  per match/tournament, plus one server-journal segment per boot; the
+  per-boot segmentation is the growth answer at file level, total growth
+  stays unbounded). Nothing prunes or archives. Fine at hobby scale; revisit
+  when the data directory's growth is ever noticed — server segments are the
+  natural first pruning target (evidence-only, orderable by header
+  timestamp).
 - **Disconnect-during-`matchStarted` forfeit gap** — an engine that vanishes
   in the narrow window while `matchStarted` is being sent can surface as a
   Faulted match rather than a Forfeited one (seen once as test flake; the

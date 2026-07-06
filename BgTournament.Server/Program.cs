@@ -18,6 +18,12 @@ builder.Services.AddSingleton<MatchService>();
 builder.Services.AddSingleton<TournamentService>();
 builder.Services.AddSingleton<JournalRehydrator>();
 
+// The server-session journal (engine lifecycle evidence): one singleton, also
+// hosted so its segment opens before Kestrel accepts and closes gracefully on
+// shutdown — a segment without a stopped marker is crash evidence.
+builder.Services.AddSingleton<ServerJournal>();
+builder.Services.AddHostedService(provider => provider.GetRequiredService<ServerJournal>());
+
 var app = builder.Build();
 
 // Fold the durable journals back into records before any endpoint serves:
@@ -101,6 +107,44 @@ app.MapGet("/matches/{matchId}/export.mat", IResult (string matchId, MatchServic
 
     byte[] mat = Encoding.UTF8.GetBytes(record.ToMatText());
     return Results.File(mat, "text/plain; charset=utf-8", $"match_{matchId}.mat");
+});
+
+// Audit: a terminal match's arbitration timeline, projected from its durable
+// journal at request time — timestamps, per-decision clock evidence, late-
+// reply discards, and the terminal outcome with its structured forfeit cause
+// (no boards or moves: replay is that surface; join by game number + entry
+// index). Same terminal-only gate as replay/export. The journal-settled
+// await closes the drain race: a match turns terminal before its journal
+// finishes flushing, and an audit read must see the settled file.
+app.MapGet("/matches/{matchId}/audit", async Task<IResult> (
+    string matchId, MatchService matches, IJournalStore store, ILoggerFactory loggerFactory) =>
+{
+    if (!matches.TryGetRecord(matchId, out var record))
+    {
+        return Results.NotFound();
+    }
+
+    if (record.Status == MatchStatus.Running)
+    {
+        return Results.Conflict(new ErrorResponse(
+            $"Match '{matchId}' is still running; watch it at /matches/{matchId}/live, "
+                + "or audit it once it ends."));
+    }
+
+    await record.JournalSettled;
+    var journal = await JournalReader.ReadTrustedEventsAsync(
+        store, JournalKind.Match, matchId, JournalCodec.DeserializeMatchEvent,
+        loggerFactory.CreateLogger("BgTournament.Server.AuditEndpoint"));
+    if (journal is not { } trusted)
+    {
+        // The record exists but its journal cannot be read (it faulted at
+        // creation, or the file is gone) — there is no audit record to serve,
+        // and saying so beats a fabricated empty timeline.
+        return Results.NotFound(new ErrorResponse(
+            $"Match '{matchId}' has no readable audit journal."));
+    }
+
+    return Results.Ok(AuditProjection.ToAuditResponse(record, trusted.Events, trusted.CorruptionDetail));
 });
 
 // Live spectating: a Server-Sent Events feed of one match as it plays. Each

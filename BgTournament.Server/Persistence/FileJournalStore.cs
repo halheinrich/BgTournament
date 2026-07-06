@@ -5,9 +5,10 @@ namespace BgTournament.Server.Persistence;
 
 /// <summary>
 /// The file-backed journal store: one <c>.jsonl</c> file per journal under
-/// <see cref="PersistenceOptions.DataDirectory"/> — <c>matches/&lt;id&gt;.jsonl</c>
-/// and <c>tournaments/&lt;id&gt;.jsonl</c>. Ids are the server's GUID-"N"
-/// record ids, so they are filesystem-safe by construction.
+/// <see cref="PersistenceOptions.DataDirectory"/> — <c>matches/&lt;id&gt;.jsonl</c>,
+/// <c>tournaments/&lt;id&gt;.jsonl</c>, and <c>server/&lt;id&gt;.jsonl</c>
+/// (one segment per server session). Ids are server-generated GUID-"N"
+/// values, so they are filesystem-safe by construction.
 /// </summary>
 internal sealed class FileJournalStore : IJournalStore
 {
@@ -53,7 +54,13 @@ internal sealed class FileJournalStore : IJournalStore
             PathFor(DirectoryFor(kind), id), FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
 
     private string DirectoryFor(JournalKind kind) =>
-        Path.Combine(_root, kind == JournalKind.Match ? "matches" : "tournaments");
+        Path.Combine(_root, kind switch
+        {
+            JournalKind.Match => "matches",
+            JournalKind.Tournament => "tournaments",
+            JournalKind.Server => "server",
+            _ => throw new InvalidOperationException($"Unhandled JournalKind value: {kind}."),
+        });
 
     private static string PathFor(string directory, string id) =>
         Path.Combine(directory, id + ".jsonl");

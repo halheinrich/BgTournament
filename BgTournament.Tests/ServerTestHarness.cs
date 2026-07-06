@@ -279,6 +279,20 @@ internal static class ServerHarness
     }
 
     /// <summary>
+    /// Hand-write one raw journal file into a data directory — the lever for
+    /// durable-format tests (old-version tolerance, damage policies, evidence
+    /// projection) that must control the exact bytes on disk.
+    /// </summary>
+    public static async Task WriteJournalAsync(
+        string dataDirectory, string kind, string id, params string[] lines)
+    {
+        string directory = Path.Combine(dataDirectory, kind);
+        Directory.CreateDirectory(directory);
+        await File.WriteAllTextAsync(
+            Path.Combine(directory, id + ".jsonl"), string.Join("\n", lines) + "\n");
+    }
+
+    /// <summary>
     /// The first seed in 1.. whose opening roll (after re-rolled ties) gives
     /// seat One the higher die — i.e. seat One is queried first. Computed
     /// from the substrate's own SeededDiceSource, not re-derived.

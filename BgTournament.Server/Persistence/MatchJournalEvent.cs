@@ -23,6 +23,8 @@ namespace BgTournament.Server.Persistence;
 [JsonDerivedType(typeof(MatchPlayEvent), "play")]
 [JsonDerivedType(typeof(MatchCubeEvent), "cube")]
 [JsonDerivedType(typeof(MatchGameEndedEvent), "gameEnded")]
+[JsonDerivedType(typeof(MatchClockEvent), "clock")]
+[JsonDerivedType(typeof(MatchLateReplyEvent), "lateReply")]
 [JsonDerivedType(typeof(MatchTerminalEvent), "terminal")]
 internal abstract record MatchJournalEvent([property: JsonPropertyOrder(-1)] DateTimeOffset At);
 
@@ -130,6 +132,50 @@ internal sealed record MatchGameEndedEvent(
     JournalSeat OnRollSeat,
     JournalGameState State,
     JournalGameResult Result) : MatchJournalEvent(At);
+
+/// <summary>
+/// One settled clocked decision — the per-decision clock evidence
+/// (schema v2; clocked matches only, the flat regime measures nothing).
+/// Written when the decision scope settles, which is <em>before</em> the
+/// runner records the resulting transcript entry, so a clock event precedes
+/// the <c>play</c>/<c>cube</c> event it timed. Three consequences an audit
+/// reader relies on: a <c>cubeOffer</c> clock event with no cube event before
+/// the next clock event was a declined double window (the substrate records
+/// no entry for it — think time the replay surface deliberately elides); a
+/// clock event followed by no entry at all is the decision that ended the
+/// match (flag fall, violation, or disconnect); and a dance is the converse —
+/// a <c>play</c> event with no clock event, because the runner records the
+/// forced empty play without querying the engine at all.
+/// </summary>
+/// <param name="At">Event time (UTC).</param>
+/// <param name="Seat">The seat whose pool this decision ran on.</param>
+/// <param name="Decision">Which decision query was timed.</param>
+/// <param name="ThinkSeconds">The wall time the server measured around the query (latency deliberately on the player's clock).</param>
+/// <param name="IncrementCredited">Whether the increment was credited — true iff the engine answered; a flag fall, violation, or disconnect debits without credit.</param>
+/// <param name="RemainingBeforeSeconds">The seat's pool entering the decision.</param>
+/// <param name="RemainingAfterSeconds">The seat's pool after settlement (debit, zero floor, then any credit).</param>
+internal sealed record MatchClockEvent(
+    DateTimeOffset At,
+    JournalSeat Seat,
+    JournalDecisionKind Decision,
+    double ThinkSeconds,
+    bool IncrementCredited,
+    double RemainingBeforeSeconds,
+    double RemainingAfterSeconds) : MatchJournalEvent(At);
+
+/// <summary>
+/// A late reply to an abandoned query was discarded (schema v2) — the benign
+/// race of PROTOCOL.md §8, previously invisible: the match moved on (timeout,
+/// flag fall, cancellation) while this reply was in flight. Evidence that the
+/// engine did answer, just too late to count.
+/// </summary>
+/// <param name="At">Event time (UTC).</param>
+/// <param name="Seat">The seat whose engine sent the late reply.</param>
+/// <param name="RequestId">The abandoned query's request id (correlates with engine-side logs).</param>
+internal sealed record MatchLateReplyEvent(
+    DateTimeOffset At,
+    JournalSeat Seat,
+    string RequestId) : MatchJournalEvent(At);
 
 /// <summary>
 /// The match's terminal outcome, folded by the host after the run ended —

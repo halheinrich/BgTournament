@@ -83,7 +83,7 @@ internal sealed class RemoteEngineAgent : IPlayAgent, ICubeAgent
                 RequestId = id, State = wireState, Die1 = die1, Die2 = die2, RollIndex = rollIndex,
                 YourTimeRemainingSeconds = yourClock, OpponentTimeRemainingSeconds = opponentClock,
             },
-            "play",
+            DecisionKind.Play,
             AgentContractViolationKind.IllegalPlay,
             cancellationToken).ConfigureAwait(false);
 
@@ -119,7 +119,7 @@ internal sealed class RemoteEngineAgent : IPlayAgent, ICubeAgent
                 RequestId = id, State = wireState,
                 YourTimeRemainingSeconds = yourClock, OpponentTimeRemainingSeconds = opponentClock,
             },
-            "cube-offer",
+            DecisionKind.CubeOffer,
             AgentContractViolationKind.IllegalCubeOffer,
             cancellationToken).ConfigureAwait(false);
         return reply.Action switch
@@ -146,7 +146,7 @@ internal sealed class RemoteEngineAgent : IPlayAgent, ICubeAgent
                 RequestId = id, State = wireState,
                 YourTimeRemainingSeconds = yourClock, OpponentTimeRemainingSeconds = opponentClock,
             },
-            "cube-response",
+            DecisionKind.CubeResponse,
             AgentContractViolationKind.IllegalCubeResponse,
             cancellationToken).ConfigureAwait(false);
         return reply.Action switch
@@ -178,7 +178,7 @@ internal sealed class RemoteEngineAgent : IPlayAgent, ICubeAgent
 
     private async Task<TReply> QueryAsync<TReply>(
         Func<string, QueryMessage> queryFactory,
-        string decision,
+        DecisionKind decision,
         AgentContractViolationKind violationKind,
         CancellationToken cancellationToken)
         where TReply : ReplyMessage
@@ -190,7 +190,7 @@ internal sealed class RemoteEngineAgent : IPlayAgent, ICubeAgent
             timeout.CancelAfter(_decisionTimeout);
             return await ExchangeAsync<TReply>(
                 queryFactory, decision, violationKind, timeout.Token, cancellationToken,
-                expired: () => new EngineTimeoutException(_channel.EngineName, decision, _decisionTimeout))
+                expired: () => new EngineTimeoutException(_channel.EngineName, decision.Label(), _decisionTimeout))
                 .ConfigureAwait(false);
         }
 
@@ -199,12 +199,12 @@ internal sealed class RemoteEngineAgent : IPlayAgent, ICubeAgent
         // spent on one long think. Settlement (the debit) happens exactly once
         // when the decision scope is disposed; only an answered decision earns
         // the increment, so a flag fall or violation forfeits without credit.
-        using var clockedDecision = _clock.StartDecision(_seat);
+        using var clockedDecision = _clock.StartDecision(_seat, decision);
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(
             cancellationToken, clockedDecision.FlagToken);
         var reply = await ExchangeAsync<TReply>(
             queryFactory, decision, violationKind, linked.Token, cancellationToken,
-            expired: () => new EngineFlagFallException(_channel.EngineName, decision, _clock.Control))
+            expired: () => new EngineFlagFallException(_channel.EngineName, decision.Label(), _clock.Control))
             .ConfigureAwait(false);
         clockedDecision.MarkAnswered();
         return reply;
@@ -219,7 +219,7 @@ internal sealed class RemoteEngineAgent : IPlayAgent, ICubeAgent
     /// </summary>
     private async Task<TReply> ExchangeAsync<TReply>(
         Func<string, QueryMessage> queryFactory,
-        string decision,
+        DecisionKind decision,
         AgentContractViolationKind violationKind,
         CancellationToken queryToken,
         CancellationToken externalToken,
@@ -239,7 +239,7 @@ internal sealed class RemoteEngineAgent : IPlayAgent, ICubeAgent
             throw new AgentContractViolationException(
                 violationKind,
                 _seat,
-                $"Engine '{_channel.EngineName}' broke protocol answering a {decision} query: {ex.Message}",
+                $"Engine '{_channel.EngineName}' broke protocol answering a {decision.Label()} query: {ex.Message}",
                 ex);
         }
     }

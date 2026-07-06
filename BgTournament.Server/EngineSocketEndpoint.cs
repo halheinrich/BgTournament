@@ -1,6 +1,7 @@
 using System.Net.WebSockets;
 using System.Text.Json;
 using BgTournament.Protocol;
+using BgTournament.Server.Persistence;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -10,7 +11,9 @@ namespace BgTournament.Server;
 /// The <c>/engine</c> WebSocket endpoint: accept, run the hello handshake
 /// (PROTOCOL.md §3), register the engine, then hold the connection open for
 /// its lifetime. Every rejection sends a named <c>rejected</c> message before
-/// closing, so engine authors see why.
+/// closing, so engine authors see why — and journals the same reason to the
+/// server journal, so the arbitration record sees it too (one funnel, one
+/// vocabulary). Registrations and disconnects are journaled symmetrically.
 /// </summary>
 internal static class EngineSocketEndpoint
 {
@@ -25,18 +28,20 @@ internal static class EngineSocketEndpoint
 
         var registry = context.RequestServices.GetRequiredService<EngineRegistry>();
         var options = context.RequestServices.GetRequiredService<IOptions<TournamentOptions>>().Value;
+        var serverJournal = context.RequestServices.GetRequiredService<ServerJournal>();
         var logger = context.RequestServices
             .GetRequiredService<ILoggerFactory>()
             .CreateLogger("BgTournament.Server.EngineSocketEndpoint");
 
         using var socket = await context.WebSockets.AcceptWebSocketAsync();
-        await RunConnectionAsync(socket, registry, options, logger, context.RequestAborted);
+        await RunConnectionAsync(socket, registry, options, serverJournal, logger, context.RequestAborted);
     }
 
     private static async Task RunConnectionAsync(
         WebSocket socket,
         EngineRegistry registry,
         TournamentOptions options,
+        ServerJournal serverJournal,
         ILogger logger,
         CancellationToken cancellationToken)
     {
@@ -54,34 +59,45 @@ internal static class EngineSocketEndpoint
                     hello = received;
                     break;
                 case null:
-                    return; // closed before saying hello
+                    return; // closed before saying hello — not a rejection, nothing to journal
                 default:
-                    await RejectAsync(channel, socket, $"Expected hello as the first message, got {first.GetType().Name}.");
+                    await RejectAsync(
+                        channel, socket, serverJournal,
+                        $"Expected hello as the first message, got {first.GetType().Name}.");
                     return;
             }
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
-            await RejectAsync(channel, socket, $"No hello within the handshake timeout ({options.HandshakeTimeoutSeconds:0.##} s).");
+            await RejectAsync(
+                channel, socket, serverJournal,
+                $"No hello within the handshake timeout ({options.HandshakeTimeoutSeconds:0.##} s).");
             return;
         }
         catch (JsonException)
         {
-            await RejectAsync(channel, socket, "The first frame was not a well-formed protocol message; expected hello.");
+            await RejectAsync(
+                channel, socket, serverJournal,
+                "The first frame was not a well-formed protocol message; expected hello.");
             return;
         }
+
+        // From here the hello parsed — rejections carry the claimed name when
+        // it is usable as evidence (non-blank).
+        string? claimedName = string.IsNullOrWhiteSpace(hello.EngineName) ? null : hello.EngineName;
 
         if (hello.ProtocolVersion != WireProtocol.Version)
         {
             await RejectAsync(
-                channel, socket,
-                $"protocol version {hello.ProtocolVersion} not supported; this server speaks {WireProtocol.Version}");
+                channel, socket, serverJournal,
+                $"protocol version {hello.ProtocolVersion} not supported; this server speaks {WireProtocol.Version}",
+                claimedName);
             return;
         }
 
-        if (string.IsNullOrWhiteSpace(hello.EngineName))
+        if (claimedName is null)
         {
-            await RejectAsync(channel, socket, "engineName must be non-empty.");
+            await RejectAsync(channel, socket, serverJournal, "engineName must be non-empty.");
             return;
         }
 
@@ -89,10 +105,13 @@ internal static class EngineSocketEndpoint
         var session = new EngineSession(hello.EngineName, hello.EngineVersion, hello.Author, connection);
         if (!registry.TryRegister(session))
         {
-            await RejectAsync(channel, socket, $"An engine named '{hello.EngineName}' is already connected.");
+            await RejectAsync(
+                channel, socket, serverJournal,
+                $"An engine named '{hello.EngineName}' is already connected.", claimedName);
             return;
         }
 
+        serverJournal.RecordEngineConnected(session);
         try
         {
             await channel.SendAsync(
@@ -105,12 +124,21 @@ internal static class EngineSocketEndpoint
         finally
         {
             registry.Remove(session);
+            serverJournal.RecordEngineDisconnected(session);
             logger.LogInformation("Engine {EngineName} disconnected.", session.Name);
         }
     }
 
-    private static async Task RejectAsync(ProtocolSocket channel, WebSocket socket, string reason)
+    /// <summary>
+    /// The one rejection funnel: the reason goes to the peer as a
+    /// <c>rejected</c> message and to the server journal verbatim — the wire
+    /// and the record never diverge.
+    /// </summary>
+    private static async Task RejectAsync(
+        ProtocolSocket channel, WebSocket socket, ServerJournal serverJournal, string reason,
+        string? engineName = null)
     {
+        serverJournal.RecordHandshakeRejected(reason, engineName);
         try
         {
             await channel.SendAsync(new RejectedMessage { Reason = reason }, CancellationToken.None);

@@ -1,5 +1,3 @@
-using System.Text;
-using System.Text.Json;
 using BgGame_Lib;
 using BgTournament.Api;
 using BgTournament.Core;
@@ -16,11 +14,10 @@ namespace BgTournament.Server.Persistence;
 /// <c>.MAT</c> export come back identical with no second fold implementation.
 ///
 /// <para><b>Damage policy.</b> A journal that cannot be trusted end-to-end is
-/// folded to its trusted prefix, never poisoned:
-/// a final line that fails to parse is a <em>torn tail</em> (a crash
-/// mid-append) — dropped with a warning; a failure on any earlier line is
-/// <em>corruption</em> — folding stops there, loudly, and the record says so
-/// in its detail. A journal without a (trusted) terminal event folds to
+/// folded to its trusted prefix, never poisoned — the parse policy itself
+/// (torn tail dropped with a warning; mid-file corruption cuts the read with
+/// a detail) lives in <see cref="JournalReader"/>, shared with the audit read
+/// surface. A journal without a (trusted) terminal event folds to
 /// <c>Interrupted</c> — evidence intact, including the escrowed fair-mode
 /// dice key, with a null end time (the true one died with the server). A
 /// file whose header is unreadable or carries an unknown schema version is
@@ -87,7 +84,7 @@ internal sealed class JournalRehydrator
 
         foreach (string id in _store.ListJournalIds(kind))
         {
-            var journal = await ParseJournalAsync(kind, id, deserialize);
+            var journal = await JournalReader.ReadTrustedEventsAsync(_store, kind, id, deserialize, _logger);
             if (journal is not { } trusted)
             {
                 continue;
@@ -128,71 +125,6 @@ internal sealed class JournalRehydrator
         return records;
     }
 
-    /// <summary>
-    /// Read one journal into its trusted event prefix, applying the damage
-    /// policy: torn tail dropped with a warning, mid-file corruption cuts the
-    /// fold there with a corruption detail. Null when the file cannot be read
-    /// at all.
-    /// </summary>
-    private async Task<(IReadOnlyList<TEvent> Events, string? CorruptionDetail)?>
-        ParseJournalAsync<TEvent>(JournalKind kind, string id, Func<string, TEvent> deserialize)
-        where TEvent : class
-    {
-        List<string> lines = [];
-        try
-        {
-            using var reader = new StreamReader(_store.OpenJournal(kind, id), Encoding.UTF8);
-            while (await reader.ReadLineAsync() is { } line)
-            {
-                lines.Add(line);
-            }
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            _logger.LogError(
-                ex, "Could not read the {Kind} journal '{Id}'; skipping it.", kind, id);
-            return null;
-        }
-
-        var events = new List<TEvent>(lines.Count);
-        string? corruptionDetail = null;
-        for (int i = 0; i < lines.Count; i++)
-        {
-            try
-            {
-                events.Add(deserialize(lines[i]));
-            }
-            catch (JsonException ex)
-            {
-                if (i == lines.Count - 1)
-                {
-                    // A crash mid-append leaves a torn final line; dropping it
-                    // is the settled policy — the events before it are whole.
-                    _logger.LogWarning(
-                        ex,
-                        "The {Kind} journal '{Id}' has a torn final line ({Line}); dropped it and "
-                            + "folded the rest.",
-                        kind, id, i + 1);
-                }
-                else
-                {
-                    corruptionDetail =
-                        $"The journal is corrupt at line {i + 1}; this record reflects only the "
-                            + "events before the corruption.";
-                    _logger.LogError(
-                        ex,
-                        "The {Kind} journal '{Id}' is corrupt at line {Line} (not the tail); folding "
-                            + "only the events before it.",
-                        kind, id, i + 1);
-                }
-
-                break;
-            }
-        }
-
-        return (events, corruptionDetail);
-    }
-
     private (MatchCreatedEvent Header, DateTimeOffset At)? ReadMatchHeader(
         string id, IReadOnlyList<MatchJournalEvent> events) =>
         ReadHeader<MatchJournalEvent, MatchCreatedEvent>(
@@ -228,12 +160,12 @@ internal sealed class JournalRehydrator
             return null;
         }
 
-        if (schemaVersion(header) != JournalCodec.SchemaVersion)
+        if (!JournalCodec.IsSupported(schemaVersion(header)))
         {
             _logger.LogError(
                 "The {Kind} journal '{Id}' carries schema version {Version}, which this server does "
-                    + "not know (it writes {Known}); skipping it.",
-                kind, id, schemaVersion(header), JournalCodec.SchemaVersion);
+                    + "not know (it folds {Min} through {Known}); skipping it.",
+                kind, id, schemaVersion(header), JournalCodec.MinSchemaVersion, JournalCodec.SchemaVersion);
             return null;
         }
 
@@ -311,6 +243,13 @@ internal sealed class JournalRehydrator
                         currentGame = null;
                     }
 
+                    break;
+
+                case MatchClockEvent or MatchLateReplyEvent:
+                    // Evidence-only (schema v2): clock settlements and late-
+                    // reply discards feed the audit surface, not the record —
+                    // nothing to fold, and the live feed has no vocabulary
+                    // for them.
                     break;
 
                 case MatchTerminalEvent terminalEvent:

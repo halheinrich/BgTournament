@@ -329,4 +329,94 @@ public class ApiGoldenTests
                 ForfeitedBy: null, Detail: null,
                 StartedAtUtc: StartedAt, EndedAtUtc: EndedAt)),
             """{"type":"terminal","match":{"matchId":"match-1","engineOne":"Alpha","engineTwo":"Beta","matchLength":3,"maxGames":null,"seed":42,"timeControl":null,"status":"completed","winner":"Alpha","seatOneScore":3,"seatTwoScore":1,"forfeitedBy":null,"detail":null,"startedAtUtc":"2026-07-05T12:00:00+00:00","endedAtUtc":"2026-07-05T12:30:00+00:00"}}""");
+
+    // ---- the audit contract (GET /matches/{matchId}/audit) ----
+
+    [Theory]
+    [InlineData(ForfeitCause.ContractViolation, "contractViolation")]
+    [InlineData(ForfeitCause.Timeout, "timeout")]
+    [InlineData(ForfeitCause.FlagFall, "flagFall")]
+    [InlineData(ForfeitCause.Disconnect, "disconnect")]
+    [InlineData(ForfeitCause.NeverConnected, "neverConnected")]
+    public void ForfeitCause_EveryMember(ForfeitCause cause, string wire) =>
+        AssertGolden(cause, $"\"{wire}\"");
+
+    [Theory]
+    [InlineData(DecisionKind.Play, "play")]
+    [InlineData(DecisionKind.CubeOffer, "cubeOffer")]
+    [InlineData(DecisionKind.CubeResponse, "cubeResponse")]
+    public void DecisionKind_EveryMember(DecisionKind kind, string wire) =>
+        AssertGolden(kind, $"\"{wire}\"");
+
+    private const string AuditAt = "2026-07-05T12:00:00+00:00";
+
+    /// <summary>
+    /// The whole audit timeline in one pin: every event kind under its
+    /// <c>"type"</c> discriminator, <c>at</c> pinned first on every event
+    /// (base-declared with an explicit order — the one place the
+    /// derived-before-inherited default is overridden), the fair-dice
+    /// verification packet (created carries commitment + algorithm, terminal
+    /// carries the revealed key), and the clock arithmetic as JSON numbers.
+    /// </summary>
+    [Fact]
+    public void MatchAuditResponse_Golden() =>
+        AssertGolden(
+            new MatchAuditResponse(
+                "match-1", "Alpha", "Beta", MatchStatus.Completed, Integrity: null,
+                Events:
+                [
+                    new AuditCreatedEvent(
+                        StartedAt, MatchLength: 3, MaxGames: null, Seed: 42,
+                        DiceAlgorithm: "hmac-sha256-dice-v1",
+                        DiceCommitment: "ffeeddccbbaa99887766554433221100ffeeddccbbaa99887766554433221100",
+                        TimeControl: new TimeControl(120, 8)),
+                    new AuditStartedEvent(StartedAt),
+                    new AuditGameStartedEvent(
+                        StartedAt, GameNumber: 1, SeatOneScore: 0, SeatTwoScore: 0, IsCrawford: false),
+                    new AuditClockEvent(
+                        StartedAt, GameNumber: 1, Seat.One, DecisionKind.Play,
+                        ThinkSeconds: 12.5, IncrementCredited: true,
+                        RemainingBeforeSeconds: 120, RemainingAfterSeconds: 115.5),
+                    new AuditPlayEvent(
+                        StartedAt, GameNumber: 1, EntryIndex: 0, Seat.One, Die1: 3, Die2: 1),
+                    new AuditCubeOfferEvent(StartedAt, GameNumber: 1, EntryIndex: 1, Seat.Two),
+                    new AuditCubeResponseEvent(
+                        StartedAt, GameNumber: 1, EntryIndex: 2, Seat.One, CubeResponseAction.Take),
+                    new AuditLateReplyEvent(StartedAt, Seat.Two, RequestId: "q-9"),
+                    new AuditGameEndedEvent(
+                        StartedAt, GameNumber: 1, Seat.Two, GameResultKind.Single, CubeValue: 2),
+                    new AuditTerminalEvent(
+                        EndedAt, MatchStatus.Completed, Winner: "Beta", SeatOneScore: 1, SeatTwoScore: 3,
+                        ForfeitedBy: null, ForfeitCause: null, Detail: null,
+                        DiceAlgorithm: "hmac-sha256-dice-v1",
+                        DiceKey: "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"),
+                ]),
+            $$$"""{"matchId":"match-1","engineOne":"Alpha","engineTwo":"Beta","status":"completed","integrity":null,"events":[{"type":"created","at":"{{{AuditAt}}}","matchLength":3,"maxGames":null,"seed":42,"diceAlgorithm":"hmac-sha256-dice-v1","diceCommitment":"ffeeddccbbaa99887766554433221100ffeeddccbbaa99887766554433221100","timeControl":{"initialSeconds":120,"incrementSeconds":8}},{"type":"started","at":"{{{AuditAt}}}"},{"type":"gameStarted","at":"{{{AuditAt}}}","gameNumber":1,"seatOneScore":0,"seatTwoScore":0,"isCrawford":false},{"type":"clock","at":"{{{AuditAt}}}","gameNumber":1,"seat":"seatOne","decision":"play","thinkSeconds":12.5,"incrementCredited":true,"remainingBeforeSeconds":120,"remainingAfterSeconds":115.5},{"type":"play","at":"{{{AuditAt}}}","gameNumber":1,"entryIndex":0,"actor":"seatOne","die1":3,"die2":1},{"type":"cubeOffer","at":"{{{AuditAt}}}","gameNumber":1,"entryIndex":1,"actor":"seatTwo"},{"type":"cubeResponse","at":"{{{AuditAt}}}","gameNumber":1,"entryIndex":2,"actor":"seatOne","action":"take"},{"type":"lateReply","at":"{{{AuditAt}}}","seat":"seatTwo","requestId":"q-9"},{"type":"gameEnded","at":"{{{AuditAt}}}","gameNumber":1,"winner":"seatTwo","resultKind":"single","cubeValue":2},{"type":"terminal","at":"2026-07-05T12:30:00+00:00","status":"completed","winner":"Beta","seatOneScore":1,"seatTwoScore":3,"forfeitedBy":null,"forfeitCause":null,"detail":null,"diceAlgorithm":"hmac-sha256-dice-v1","diceKey":"00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"}]}""");
+
+    /// <summary>The forfeit shape: the structured cause is the headline datum, beside the prose detail.</summary>
+    [Fact]
+    public void AuditTerminalEvent_FlagFall_Golden() =>
+        AssertGolden<AuditEvent>(
+            new AuditTerminalEvent(
+                EndedAt, MatchStatus.Forfeited, Winner: "Beta", SeatOneScore: null, SeatTwoScore: null,
+                ForfeitedBy: "Alpha", ForfeitCause.FlagFall,
+                Detail: "Engine 'Alpha' ran out of time on a play query (flag fall).",
+                DiceAlgorithm: null, DiceKey: null),
+            """{"type":"terminal","at":"2026-07-05T12:30:00+00:00","status":"forfeited","winner":"Beta","seatOneScore":null,"seatTwoScore":null,"forfeitedBy":"Alpha","forfeitCause":"flagFall","detail":"Engine \u0027Alpha\u0027 ran out of time on a play query (flag fall).","diceAlgorithm":null,"diceKey":null}""");
+
+    /// <summary>
+    /// The Interrupted close: <c>at</c> is honestly null (the true end died
+    /// with the server) and the escrowed fair-dice key is revealed — the
+    /// arbitration case the reveal exists for.
+    /// </summary>
+    [Fact]
+    public void AuditTerminalEvent_Interrupted_Golden() =>
+        AssertGolden<AuditEvent>(
+            new AuditTerminalEvent(
+                At: null, MatchStatus.Interrupted, Winner: null, SeatOneScore: null, SeatTwoScore: null,
+                ForfeitedBy: null, ForfeitCause: null,
+                Detail: "The server was interrupted while this match was running; the record was reconstructed from its journal.",
+                DiceAlgorithm: "hmac-sha256-dice-v1",
+                DiceKey: "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"),
+            """{"type":"terminal","at":null,"status":"interrupted","winner":null,"seatOneScore":null,"seatTwoScore":null,"forfeitedBy":null,"forfeitCause":null,"detail":"The server was interrupted while this match was running; the record was reconstructed from its journal.","diceAlgorithm":"hmac-sha256-dice-v1","diceKey":"00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"}""");
 }

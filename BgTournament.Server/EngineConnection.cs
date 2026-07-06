@@ -56,6 +56,16 @@ internal sealed class EngineConnection : IEngineChannel
     public Task Closed => _closed.Task;
 
     /// <summary>
+    /// Raised with the request id when a late reply to the most recently
+    /// abandoned query is discarded (PROTOCOL.md §8's benign race) — the
+    /// arbitration-evidence hook: proof the engine did answer, just too late
+    /// to count. Raised on the receive loop; handlers obey the observer
+    /// discipline — fast, in-memory, and non-throwing (the match host's
+    /// handler maps and enqueues to the journal, whose containment is its own).
+    /// </summary>
+    public event Action<string>? LateReplyDiscarded;
+
+    /// <summary>
     /// Receive until the connection ends. Run exactly once, by the endpoint
     /// handler that accepted the socket; the handler's request lifetime spans
     /// this loop.
@@ -235,6 +245,7 @@ internal sealed class EngineConnection : IEngineChannel
                 _logger.LogDebug(
                     "Discarded a late reply ({RequestId}) from engine {EngineName} to an abandoned query.",
                     reply.RequestId, EngineName);
+                LateReplyDiscarded?.Invoke(reply.RequestId);
                 return true;
             }
 

@@ -4,9 +4,7 @@ using BgTournament.Api;
 using BgTournament.Protocol;
 using ApiCubeOwner = BgTournament.Api.CubeOwner;
 using ApiCubeResponse = BgTournament.Api.CubeResponseAction;
-using ApiResultKind = BgTournament.Api.GameResultKind;
 using SubstrateCubeOwner = BgDataTypes_Lib.CubeOwner;
-using SubstrateResultKind = BgGame_Lib.GameResultKind;
 
 namespace BgTournament.Server;
 
@@ -91,8 +89,8 @@ internal static class ReplayProjection
 
         return new GameReplay(
             gameNumber,
-            ToSeat(game.Winner),
-            ToResultKind(game.Result.Kind),
+            ApiMapping.ToSeat(game.Winner),
+            ApiMapping.ToResultKind(game.Result.Kind),
             game.Result.CubeSize,
             game.Result.Points,
             seatOneScore,
@@ -113,19 +111,19 @@ internal static class ReplayProjection
     public static GameEntry ProjectEntry(TranscriptEntry entry) => entry switch
     {
         PlayTranscriptEntry play => new PlayEntry(
-            ToSeat(play.OnRollSeat),
+            ApiMapping.ToSeat(play.OnRollSeat),
             ToPosition(play.State, play.OnRollSeat),
             play.Die1,
             play.Die2,
             ToMoves(play.ChosenPlay)),
 
         CubeTranscriptEntry { Action: CubeAction.Double } offer => new CubeOfferEntry(
-            ToSeat(offer.ActingSeat), ToPosition(offer.State, offer.OnRollSeat)),
+            ApiMapping.ToSeat(offer.ActingSeat), ToPosition(offer.State, offer.OnRollSeat)),
 
         // Recorded against the live state — still the offerer's frame — while
         // the decision belongs to ActingSeat (the other seat).
         CubeTranscriptEntry { Action: CubeAction.Take or CubeAction.Pass } response => new CubeResponseEntry(
-            ToSeat(response.ActingSeat),
+            ApiMapping.ToSeat(response.ActingSeat),
             ToPosition(response.State, response.OnRollSeat),
             response.Action == CubeAction.Take ? ApiCubeResponse.Take : ApiCubeResponse.Pass),
 
@@ -185,9 +183,6 @@ internal static class ReplayProjection
             ? (match.OnRollScore, match.OpponentScore)
             : (match.OpponentScore, match.OnRollScore);
 
-    private static Seat ToSeat(MatchSeat seat) =>
-        seat == MatchSeat.One ? Seat.One : Seat.Two;
-
     /// <summary>Seat-key the cube owner. Valid only for a seat-One-frame snapshot.</summary>
     private static ApiCubeOwner ToOwner(SubstrateCubeOwner owner) => owner switch
     {
@@ -195,13 +190,5 @@ internal static class ReplayProjection
         SubstrateCubeOwner.Opponent => ApiCubeOwner.SeatTwo,
         SubstrateCubeOwner.Centered => ApiCubeOwner.Centered,
         _ => throw new InvalidOperationException($"Unhandled CubeOwner value: {owner}."),
-    };
-
-    private static ApiResultKind ToResultKind(SubstrateResultKind kind) => kind switch
-    {
-        SubstrateResultKind.WinSingle => ApiResultKind.Single,
-        SubstrateResultKind.WinGammon => ApiResultKind.Gammon,
-        SubstrateResultKind.WinBackgammon => ApiResultKind.Backgammon,
-        _ => throw new InvalidOperationException($"Unhandled GameResultKind value: {kind}."),
     };
 }

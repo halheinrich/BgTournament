@@ -62,6 +62,23 @@ internal enum JournalCubeAction
     Pass,
 }
 
+/// <summary>Which decision query a clock settlement timed, journal-pinned.</summary>
+[JsonConverter(typeof(JsonStringEnumConverter<JournalDecisionKind>))]
+internal enum JournalDecisionKind
+{
+    /// <summary>A play query (checker movement for a rolled pair).</summary>
+    [JsonStringEnumMemberName("play")]
+    Play,
+
+    /// <summary>A cube-offer query (double or roll).</summary>
+    [JsonStringEnumMemberName("cubeOffer")]
+    CubeOffer,
+
+    /// <summary>A cube-response query (take or pass).</summary>
+    [JsonStringEnumMemberName("cubeResponse")]
+    CubeResponse,
+}
+
 /// <summary>A finished game's win kind, journal-pinned.</summary>
 [JsonConverter(typeof(JsonStringEnumConverter<JournalResultKind>))]
 internal enum JournalResultKind

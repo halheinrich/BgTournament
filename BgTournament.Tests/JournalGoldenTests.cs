@@ -37,25 +37,48 @@ public class JournalGoldenTests
         Assert.Equal(golden, JournalCodec.Serialize(JournalCodec.DeserializeTournamentEvent(golden)));
     }
 
+    private static void AssertGolden(ServerJournalEvent journalEvent, string golden)
+    {
+        Assert.Equal(golden, JournalCodec.Serialize(journalEvent));
+        Assert.Equal(golden, JournalCodec.Serialize(JournalCodec.DeserializeServerEvent(golden)));
+    }
+
+    /// <summary>
+    /// The version constants are format facts, pinned like bytes: v2 added the
+    /// match-journal arbitration evidence; v1 files must keep folding; the
+    /// server journal versions independently, from 1.
+    /// </summary>
+    [Fact]
+    public void SchemaVersions_Pinned()
+    {
+        Assert.Equal(2, JournalCodec.SchemaVersion);
+        Assert.Equal(1, JournalCodec.MinSchemaVersion);
+        Assert.Equal(1, JournalCodec.ServerSchemaVersion);
+        Assert.True(JournalCodec.IsSupported(1));
+        Assert.True(JournalCodec.IsSupported(2));
+        Assert.False(JournalCodec.IsSupported(0));
+        Assert.False(JournalCodec.IsSupported(3));
+    }
+
     [Fact]
     public void MatchCreated_FairClocked_Golden() =>
         AssertGolden(
             new MatchCreatedEvent(
-                At, SchemaVersion: 1, "match-1", "Alpha", "Beta", MatchLength: 7, MaxGames: 50,
+                At, JournalCodec.SchemaVersion, "match-1", "Alpha", "Beta", MatchLength: 7, MaxGames: 50,
                 Seed: 42,
                 DiceAlgorithm: "hmac-sha256-dice-v1",
                 DiceKey: "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
                 TimeControl: new JournalTimeControl(120, 8)),
-            $$$"""{"type":"created","schemaVersion":1,"at":"{{{AtWire}}}","matchId":"match-1","engineOne":"Alpha","engineTwo":"Beta","matchLength":7,"maxGames":50,"seed":42,"diceAlgorithm":"hmac-sha256-dice-v1","diceKey":"00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff","timeControl":{"initialSeconds":120,"incrementSeconds":8}}""");
+            $$$"""{"type":"created","schemaVersion":2,"at":"{{{AtWire}}}","matchId":"match-1","engineOne":"Alpha","engineTwo":"Beta","matchLength":7,"maxGames":50,"seed":42,"diceAlgorithm":"hmac-sha256-dice-v1","diceKey":"00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff","timeControl":{"initialSeconds":120,"incrementSeconds":8}}""");
 
     /// <summary>Explicit-seed, flat-regime header: every optional field is omitted, not null.</summary>
     [Fact]
     public void MatchCreated_SeededFlat_OmitsAbsentFields() =>
         AssertGolden(
             new MatchCreatedEvent(
-                At, SchemaVersion: 1, "match-1", "Alpha", "Beta", MatchLength: 1, MaxGames: null,
+                At, JournalCodec.SchemaVersion, "match-1", "Alpha", "Beta", MatchLength: 1, MaxGames: null,
                 Seed: 7, DiceAlgorithm: null, DiceKey: null, TimeControl: null),
-            $$"""{"type":"created","schemaVersion":1,"at":"{{AtWire}}","matchId":"match-1","engineOne":"Alpha","engineTwo":"Beta","matchLength":1,"seed":7}""");
+            $$"""{"type":"created","schemaVersion":2,"at":"{{AtWire}}","matchId":"match-1","engineOne":"Alpha","engineTwo":"Beta","matchLength":1,"seed":7}""");
 
     [Fact]
     public void MatchStarted_Golden() =>
@@ -122,6 +145,39 @@ public class JournalGoldenTests
                 JournalCubeAction.NoDouble),
             $$"""{"type":"cube","at":"{{AtWire}}","onRollSeat":"one","state":{"board":[0,-2,0,0,0,0,5,0,3,0,0,0,-5,5,0,0,0,-3,0,-5,0,0,0,0,2,0],"cubeSize":2,"cubeOwner":"{{wire}}","matchLength":5,"onRollScore":2,"opponentScore":3,"isCrawford":false},"action":"noDouble"}""");
 
+    /// <summary>
+    /// The per-decision clock evidence (schema v2). Every decision kind, and
+    /// the credited/uncredited branch, byte-pinned.
+    /// </summary>
+    [Theory]
+    [InlineData(nameof(JournalDecisionKind.Play), "play")]
+    [InlineData(nameof(JournalDecisionKind.CubeOffer), "cubeOffer")]
+    [InlineData(nameof(JournalDecisionKind.CubeResponse), "cubeResponse")]
+    public void MatchClock_EveryDecisionKind(string kind, string wire) =>
+        AssertGolden(
+            new MatchClockEvent(
+                At, JournalSeat.One, Enum.Parse<JournalDecisionKind>(kind),
+                ThinkSeconds: 12.5, IncrementCredited: true,
+                RemainingBeforeSeconds: 120, RemainingAfterSeconds: 115.5),
+            $$"""{"type":"clock","at":"{{AtWire}}","seat":"one","decision":"{{wire}}","thinkSeconds":12.5,"incrementCredited":true,"remainingBeforeSeconds":120,"remainingAfterSeconds":115.5}""");
+
+    /// <summary>A flagged decision: debit without credit, pool floored at zero.</summary>
+    [Fact]
+    public void MatchClock_FlagFall_UncreditedZeroFloor() =>
+        AssertGolden(
+            new MatchClockEvent(
+                At, JournalSeat.Two, JournalDecisionKind.Play,
+                ThinkSeconds: 200, IncrementCredited: false,
+                RemainingBeforeSeconds: 120, RemainingAfterSeconds: 0),
+            $$"""{"type":"clock","at":"{{AtWire}}","seat":"two","decision":"play","thinkSeconds":200,"incrementCredited":false,"remainingBeforeSeconds":120,"remainingAfterSeconds":0}""");
+
+    /// <summary>The benign race, made visible (schema v2).</summary>
+    [Fact]
+    public void MatchLateReply_Golden() =>
+        AssertGolden(
+            new MatchLateReplyEvent(At, JournalSeat.Two, RequestId: "q-17"),
+            $$"""{"type":"lateReply","at":"{{AtWire}}","seat":"two","requestId":"q-17"}""");
+
     [Fact]
     public void MatchTerminal_Completed_Golden() =>
         AssertGolden(
@@ -174,18 +230,18 @@ public class JournalGoldenTests
     public void TournamentCreated_Golden() =>
         AssertGolden(
             new TournamentCreatedEvent(
-                At, SchemaVersion: 1, "tournament-1", ["Alpha", "Beta", "Gamma"], MatchLength: 3,
+                At, JournalCodec.SchemaVersion, "tournament-1", ["Alpha", "Beta", "Gamma"], MatchLength: 3,
                 MatchesPerPairing: 2, Seed: 99, FairDice: true,
                 TimeControl: new JournalTimeControl(60, 5)),
-            $$$"""{"type":"created","schemaVersion":1,"at":"{{{AtWire}}}","tournamentId":"tournament-1","participants":["Alpha","Beta","Gamma"],"matchLength":3,"matchesPerPairing":2,"seed":99,"fairDice":true,"timeControl":{"initialSeconds":60,"incrementSeconds":5}}""");
+            $$$"""{"type":"created","schemaVersion":2,"at":"{{{AtWire}}}","tournamentId":"tournament-1","participants":["Alpha","Beta","Gamma"],"matchLength":3,"matchesPerPairing":2,"seed":99,"fairDice":true,"timeControl":{"initialSeconds":60,"incrementSeconds":5}}""");
 
     [Fact]
     public void TournamentCreated_SeededFlat_OmitsTimeControl() =>
         AssertGolden(
             new TournamentCreatedEvent(
-                At, SchemaVersion: 1, "tournament-1", ["Alpha", "Beta"], MatchLength: 1,
+                At, JournalCodec.SchemaVersion, "tournament-1", ["Alpha", "Beta"], MatchLength: 1,
                 MatchesPerPairing: 1, Seed: 7, FairDice: false, TimeControl: null),
-            $$"""{"type":"created","schemaVersion":1,"at":"{{AtWire}}","tournamentId":"tournament-1","participants":["Alpha","Beta"],"matchLength":1,"matchesPerPairing":1,"seed":7,"fairDice":false}""");
+            $$"""{"type":"created","schemaVersion":2,"at":"{{AtWire}}","tournamentId":"tournament-1","participants":["Alpha","Beta"],"matchLength":1,"matchesPerPairing":1,"seed":7,"fairDice":false}""");
 
     [Fact]
     public void TournamentMatchStarted_Golden() =>
@@ -214,4 +270,53 @@ public class JournalGoldenTests
             new TournamentTerminalEvent(
                 At, JournalTournamentOutcome.Aborted, Detail: "The server stopped the tournament."),
             $$"""{"type":"terminal","at":"{{AtWire}}","status":"aborted","detail":"The server stopped the tournament."}""");
+
+    // ---- the server journal (engine lifecycle evidence; independent schema) ----
+
+    [Fact]
+    public void ServerStarted_Golden() =>
+        AssertGolden(
+            new ServerStartedEvent(At, JournalCodec.ServerSchemaVersion),
+            $$"""{"type":"started","schemaVersion":1,"at":"{{AtWire}}"}""");
+
+    [Fact]
+    public void EngineConnected_Golden() =>
+        AssertGolden(
+            new EngineConnectedEvent(At, EngineName: "Alpha", Version: "1.2", Author: "Ada"),
+            $$"""{"type":"engineConnected","at":"{{AtWire}}","engineName":"Alpha","version":"1.2","author":"Ada"}""");
+
+    /// <summary>The hello's optional identity fields are omitted, not null.</summary>
+    [Fact]
+    public void EngineConnected_MinimalHello_OmitsAbsentFields() =>
+        AssertGolden(
+            new EngineConnectedEvent(At, EngineName: "Alpha", Version: null, Author: null),
+            $$"""{"type":"engineConnected","at":"{{AtWire}}","engineName":"Alpha"}""");
+
+    [Fact]
+    public void EngineDisconnected_Golden() =>
+        AssertGolden(
+            new EngineDisconnectedEvent(At, EngineName: "Alpha"),
+            $$"""{"type":"engineDisconnected","at":"{{AtWire}}","engineName":"Alpha"}""");
+
+    /// <summary>A rejection carrying the claimed name (duplicate-name case). Note the escaped apostrophes, the Api-golden precedent.</summary>
+    [Fact]
+    public void HandshakeRejected_WithName_Golden() =>
+        AssertGolden(
+            new HandshakeRejectedEvent(
+                At, Reason: "An engine named 'Alpha' is already connected.", EngineName: "Alpha"),
+            $$"""{"type":"handshakeRejected","at":"{{AtWire}}","reason":"An engine named \u0027Alpha\u0027 is already connected.","engineName":"Alpha"}""");
+
+    /// <summary>A rejection before a usable hello: the name is omitted, not null.</summary>
+    [Fact]
+    public void HandshakeRejected_NoName_OmitsField() =>
+        AssertGolden(
+            new HandshakeRejectedEvent(
+                At, Reason: "No hello within the handshake timeout (10 s).", EngineName: null),
+            $$"""{"type":"handshakeRejected","at":"{{AtWire}}","reason":"No hello within the handshake timeout (10 s)."}""");
+
+    [Fact]
+    public void ServerStopped_Golden() =>
+        AssertGolden(
+            new ServerStoppedEvent(At),
+            $$"""{"type":"stopped","at":"{{AtWire}}"}""");
 }

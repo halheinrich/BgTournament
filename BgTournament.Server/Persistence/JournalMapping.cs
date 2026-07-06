@@ -62,6 +62,33 @@ internal static class JournalMapping
             $"Cannot journal transcript entry: {entry.GetType().Name}."),
     };
 
+    /// <summary>One settled clocked decision — the per-decision arbitration evidence.</summary>
+    public static MatchClockEvent ToEvent(ClockDecisionSettlement settlement, DateTimeOffset at) =>
+        new(
+            at,
+            ToJournal(settlement.Seat),
+            ToJournal(settlement.Decision),
+            settlement.Think.TotalSeconds,
+            settlement.IncrementCredited,
+            settlement.RemainingBefore.TotalSeconds,
+            settlement.RemainingAfter.TotalSeconds);
+
+    /// <summary>A discarded late reply to an abandoned query (the benign race, made visible).</summary>
+    public static MatchLateReplyEvent ToLateReplyEvent(MatchSeat seat, string requestId, DateTimeOffset at) =>
+        new(at, ToJournal(seat), requestId);
+
+    /// <summary>An engine's successful registration, for the server journal.</summary>
+    public static EngineConnectedEvent ToConnectedEvent(EngineSession session, DateTimeOffset at) =>
+        new(at, session.Name, session.Version, session.Author);
+
+    /// <summary>A registered engine's connection end, for the server journal.</summary>
+    public static EngineDisconnectedEvent ToDisconnectedEvent(EngineSession session, DateTimeOffset at) =>
+        new(at, session.Name);
+
+    /// <summary>A handshake rejection, for the server journal — same reason string the wire carries.</summary>
+    public static HandshakeRejectedEvent ToRejectedEvent(string reason, string? engineName, DateTimeOffset at) =>
+        new(at, reason, engineName);
+
     /// <summary>The terminal outcome folded into <paramref name="record"/> by the host.</summary>
     public static MatchTerminalEvent ToTerminalEvent(MatchRecord record, DateTimeOffset at) =>
         new(
@@ -153,10 +180,31 @@ internal static class JournalMapping
     public static TimeControl? ToTimeControl(JournalTimeControl? timeControl) =>
         timeControl is null ? null : new TimeControl(timeControl.InitialSeconds, timeControl.IncrementSeconds);
 
+    /// <summary>The seat a journaled seat folds to (public: the audit read attributes evidence events with it).</summary>
+    public static MatchSeat ToSeat(JournalSeat seat) =>
+        seat == JournalSeat.One ? MatchSeat.One : MatchSeat.Two;
+
+    /// <summary>The decision kind a journaled one folds to.</summary>
+    public static DecisionKind ToDecisionKind(JournalDecisionKind kind) => kind switch
+    {
+        JournalDecisionKind.Play => DecisionKind.Play,
+        JournalDecisionKind.CubeOffer => DecisionKind.CubeOffer,
+        JournalDecisionKind.CubeResponse => DecisionKind.CubeResponse,
+        _ => throw new InvalidOperationException($"Unhandled JournalDecisionKind value: {kind}."),
+    };
+
     // ---- field correspondences (private: every path above funnels through these) ----
 
     private static JournalTimeControl? ToJournal(TimeControl? timeControl) =>
         timeControl is null ? null : new JournalTimeControl(timeControl.InitialSeconds, timeControl.IncrementSeconds);
+
+    private static JournalDecisionKind ToJournal(DecisionKind kind) => kind switch
+    {
+        DecisionKind.Play => JournalDecisionKind.Play,
+        DecisionKind.CubeOffer => JournalDecisionKind.CubeOffer,
+        DecisionKind.CubeResponse => JournalDecisionKind.CubeResponse,
+        _ => throw new InvalidOperationException($"Unhandled DecisionKind value: {kind}."),
+    };
 
     private static JournalGameState ToJournal(GameSnapshot state) =>
         new(
@@ -200,9 +248,6 @@ internal static class JournalMapping
 
     private static JournalSeat ToJournal(MatchSeat seat) =>
         seat == MatchSeat.One ? JournalSeat.One : JournalSeat.Two;
-
-    private static MatchSeat ToSeat(JournalSeat seat) =>
-        seat == JournalSeat.One ? MatchSeat.One : MatchSeat.Two;
 
     private static JournalCubeOwner ToJournal(SubstrateCubeOwner owner) => owner switch
     {

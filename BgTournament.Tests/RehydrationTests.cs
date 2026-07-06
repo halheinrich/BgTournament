@@ -276,6 +276,112 @@ public class RehydrationTests
         }
     }
 
+    private const string RawAt = "2026-07-05T12:00:00+00:00";
+
+    private const string RawState =
+        """{"board":[0,-2,0,0,0,0,5,0,3,0,0,0,-5,5,0,0,0,-3,0,-5,0,0,0,0,2,0],"cubeSize":1,"cubeOwner":"centered","matchLength":1,"onRollScore":0,"opponentScore":0,"isCrawford":false}""";
+
+    /// <summary>
+    /// Old files fold forever: a raw schema-v1 journal (the exact byte shape
+    /// the v1 server wrote — no evidence events, <c>schemaVersion: 1</c>)
+    /// still rehydrates into a served record under the v2 codec.
+    /// </summary>
+    [Fact]
+    public async Task SchemaV1Journal_StillFolds()
+    {
+        string dataDirectory = NewDataDirectory();
+        try
+        {
+            await ServerHarness.WriteJournalAsync(
+                dataDirectory, "matches", "v1match",
+                $$"""{"type":"created","schemaVersion":1,"at":"{{RawAt}}","matchId":"v1match","engineOne":"Alpha","engineTwo":"Beta","matchLength":1,"seed":7}""",
+                $$"""{"type":"started","at":"{{RawAt}}"}""",
+                $$"""{"type":"gameStarted","at":"{{RawAt}}","gameNumber":1,"seatOneScore":0,"seatTwoScore":0,"isCrawford":false}""",
+                $$"""{"type":"play","at":"{{RawAt}}","onRollSeat":"one","state":{{RawState}},"die1":3,"die2":1,"moves":[{"from":8,"to":5},{"from":6,"to":5}]}""",
+                $$$"""{"type":"gameEnded","at":"{{{RawAt}}}","onRollSeat":"one","state":{{{RawState}}},"result":{"kind":"single","onRollWon":true,"cubeSize":1}}""",
+                $$"""{"type":"terminal","at":"{{RawAt}}","status":"completed","winner":"Alpha","seatOneScore":1,"seatTwoScore":0}""");
+
+            using var factory = ServerHarness.NewFactory(dataDirectory: dataDirectory);
+            using var http = factory.CreateClient();
+
+            var summary = await http.GetFromJsonAsync<JsonElement>("/matches/v1match");
+            Assert.Equal("completed", summary.GetProperty("status").GetString());
+            Assert.Equal("Alpha", summary.GetProperty("winner").GetString());
+
+            var games = await http.GetFromJsonAsync<JsonElement>("/matches/v1match/games");
+            Assert.Equal(1, games.GetProperty("games").GetArrayLength());
+        }
+        finally
+        {
+            Directory.Delete(dataDirectory, recursive: true);
+        }
+    }
+
+    /// <summary>
+    /// The v2 evidence events (clock settlements, late-reply discards) are
+    /// audit material, not record state: a journal carrying them folds to the
+    /// same record it would without them.
+    /// </summary>
+    [Fact]
+    public async Task EvidenceEvents_AreIgnoredByTheFold()
+    {
+        string dataDirectory = NewDataDirectory();
+        try
+        {
+            await ServerHarness.WriteJournalAsync(
+                dataDirectory, "matches", "v2match",
+                $$"""{"type":"created","schemaVersion":2,"at":"{{RawAt}}","matchId":"v2match","engineOne":"Alpha","engineTwo":"Beta","matchLength":1,"seed":7}""",
+                $$"""{"type":"started","at":"{{RawAt}}"}""",
+                $$"""{"type":"gameStarted","at":"{{RawAt}}","gameNumber":1,"seatOneScore":0,"seatTwoScore":0,"isCrawford":false}""",
+                $$"""{"type":"clock","at":"{{RawAt}}","seat":"one","decision":"play","thinkSeconds":2.5,"incrementCredited":true,"remainingBeforeSeconds":60,"remainingAfterSeconds":62.5}""",
+                $$"""{"type":"play","at":"{{RawAt}}","onRollSeat":"one","state":{{RawState}},"die1":3,"die2":1,"moves":[{"from":8,"to":5},{"from":6,"to":5}]}""",
+                $$"""{"type":"lateReply","at":"{{RawAt}}","seat":"two","requestId":"q-4"}""",
+                $$$"""{"type":"gameEnded","at":"{{{RawAt}}}","onRollSeat":"one","state":{{{RawState}}},"result":{"kind":"single","onRollWon":true,"cubeSize":1}}""",
+                $$"""{"type":"terminal","at":"{{RawAt}}","status":"completed","winner":"Alpha","seatOneScore":1,"seatTwoScore":0}""");
+
+            using var factory = ServerHarness.NewFactory(dataDirectory: dataDirectory);
+            using var http = factory.CreateClient();
+
+            var summary = await http.GetFromJsonAsync<JsonElement>("/matches/v2match");
+            Assert.Equal("completed", summary.GetProperty("status").GetString());
+            Assert.Equal("Alpha", summary.GetProperty("winner").GetString());
+            Assert.Equal(1, summary.GetProperty("seatOneScore").GetInt32());
+
+            // The replay fold is untouched by the evidence lines: one game,
+            // whose single entry is the play (evidence events are not entries).
+            var games = await http.GetFromJsonAsync<JsonElement>("/matches/v2match/games");
+            var game = Assert.Single(games.GetProperty("games").EnumerateArray().ToArray());
+            Assert.Equal(1, game.GetProperty("entries").GetArrayLength());
+        }
+        finally
+        {
+            Directory.Delete(dataDirectory, recursive: true);
+        }
+    }
+
+    /// <summary>An unknown (future) schema version skips the whole file, loudly — no partial trust.</summary>
+    [Fact]
+    public async Task UnknownSchemaVersion_SkipsTheFile()
+    {
+        string dataDirectory = NewDataDirectory();
+        try
+        {
+            await ServerHarness.WriteJournalAsync(
+                dataDirectory, "matches", "v9match",
+                $$"""{"type":"created","schemaVersion":9,"at":"{{RawAt}}","matchId":"v9match","engineOne":"Alpha","engineTwo":"Beta","matchLength":1,"seed":7}""",
+                $$"""{"type":"terminal","at":"{{RawAt}}","status":"completed","winner":"Alpha","seatOneScore":1,"seatTwoScore":0}""");
+
+            using var factory = ServerHarness.NewFactory(dataDirectory: dataDirectory);
+            using var http = factory.CreateClient();
+            var response = await http.GetAsync("/matches/v9match");
+            Assert.Equal(System.Net.HttpStatusCode.NotFound, response.StatusCode);
+        }
+        finally
+        {
+            Directory.Delete(dataDirectory, recursive: true);
+        }
+    }
+
     [Fact]
     public async Task CompletedTournament_ServesIdenticallyAfterRestart()
     {

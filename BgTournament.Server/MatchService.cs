@@ -125,6 +125,25 @@ internal sealed class MatchRecord
     /// </summary>
     public MatchJournal? Journal { get; init; }
 
+    private readonly TaskCompletionSource _journalSettled =
+        new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    /// <summary>
+    /// Completes when the journal on disk is this record's settled history —
+    /// the audit read gate. A match turns terminal (status, live terminal
+    /// event) <em>before</em> its journal finishes draining, so an audit read
+    /// in that window would see an incomplete file; it awaits this instead.
+    /// Already complete when <see cref="Journal"/> is null (a rehydrated
+    /// record's file is its history by definition); otherwise completed by
+    /// <see cref="MarkJournalSettled"/> — unconditionally, on every finalize
+    /// path, because a gate left pending would turn a millisecond race into a
+    /// hung request.
+    /// </summary>
+    public Task JournalSettled => Journal is null ? Task.CompletedTask : _journalSettled.Task;
+
+    /// <summary>The journal has drained (or will never drain further); open the audit read gate.</summary>
+    public void MarkJournalSettled() => _journalSettled.TrySetResult();
+
     /// <summary>
     /// Mark this match forfeited by the engine in <paramref name="seat"/>:
     /// the opponent wins the match outright.
@@ -338,10 +357,19 @@ internal sealed class MatchService
     {
         record.EndedAtUtc = _time.GetUtcNow();
         record.Live.MarkTerminal(record.ToSummary());
-        if (record.Journal is { } journal)
+        try
         {
-            journal.RecordTerminal(record);
-            await journal.CompleteAsync();
+            if (record.Journal is { } journal)
+            {
+                journal.RecordTerminal(record);
+                await journal.CompleteAsync();
+            }
+        }
+        finally
+        {
+            // Unconditionally: a gate left pending would hang the audit read,
+            // which is strictly worse than the short file it protects against.
+            record.MarkJournalSettled();
         }
     }
 
@@ -377,6 +405,18 @@ internal sealed class MatchService
         WatchClosed(sessionOne, 1);
         WatchClosed(sessionTwo, 2);
 
+        // Late-reply discards are per-connection evidence; attribute them to
+        // seats for this match's journal while the match runs. The handlers
+        // obey the observer discipline (map + non-blocking enqueue, contained
+        // by the journal); one racing past match end lands in a completed
+        // writer and is dropped.
+        Action<string> lateReplyOne = requestId =>
+            record.Journal?.RecordLateReply(MatchSeat.One, requestId);
+        Action<string> lateReplyTwo = requestId =>
+            record.Journal?.RecordLateReply(MatchSeat.Two, requestId);
+        sessionOne.Connection.LateReplyDiscarded += lateReplyOne;
+        sessionTwo.Connection.LateReplyDiscarded += lateReplyTwo;
+
         try
         {
             record.Journal?.RecordStarted();
@@ -394,10 +434,13 @@ internal sealed class MatchService
 
             // Time-control matches run on one shared Fischer clock (a per-seat
             // pool pair) instead of the flat per-decision timeout; the clock is
-            // match runtime, scoped to this run.
+            // match runtime, scoped to this run. Every settlement is journaled
+            // as per-decision arbitration evidence.
             MatchClock? clock = record.TimeControl is null
                 ? null
-                : new MatchClock(record.TimeControl, _time);
+                : new MatchClock(
+                    record.TimeControl, _time,
+                    settlement => record.Journal?.RecordClockDecision(settlement));
 
             var runner = new MatchRunner(counting);
             var participantOne = MatchParticipant.From(
@@ -465,6 +508,8 @@ internal sealed class MatchService
         finally
         {
             Volatile.Write(ref matchDone, true);
+            sessionOne.Connection.LateReplyDiscarded -= lateReplyOne;
+            sessionTwo.Connection.LateReplyDiscarded -= lateReplyTwo;
             record.EndedAtUtc = _time.GetUtcNow();
 
             // The single terminal live-feed event, for every outcome: the
@@ -479,10 +524,20 @@ internal sealed class MatchService
             // the match is over, and the busy flags release after this method
             // regardless. A process killed mid-drain folds honestly as
             // Interrupted on the next start.
-            if (record.Journal is { } terminalJournal)
+            try
             {
-                terminalJournal.RecordTerminal(record);
-                await terminalJournal.CompleteAsync();
+                if (record.Journal is { } terminalJournal)
+                {
+                    terminalJournal.RecordTerminal(record);
+                    await terminalJournal.CompleteAsync();
+                }
+            }
+            finally
+            {
+                // Unconditionally: a gate left pending would hang the audit
+                // read, which is strictly worse than the short file it
+                // protects against.
+                record.MarkJournalSettled();
             }
 
             // Aborted/Faulted have no wire vocabulary in v1 (PROTOCOL.md §7
