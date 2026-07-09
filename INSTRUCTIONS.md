@@ -20,8 +20,9 @@ https://github.com/halheinrich/BgTournament — branch `main`.
 
 ## Depends on
 
-- **BgDataTypes_Lib** — `Play`/`Move` (sign-encoded hits, `DeduplicationKey`
-  equality), `BoardState.FromMop`, `CubeAction`/`CubeOwner`.
+- **BgDataTypes_Lib** — `Play`/`Move` (sign-encoded hits; canonical `Play`
+  equality — order/decomposition-insensitive, fully hit-sensitive),
+  `BoardState.FromMop`, `CubeAction`/`CubeOwner`.
 - **BgGame_Lib** — `IPlayAgent`/`ICubeAgent` (the unified queried-player-frame
   contract), `GameState` (`FromPosition`, `OpponentView`, `Snapshot`),
   `MatchState.FromScores`, `GameSnapshot`/`MatchSnapshot`, `MatchRunner` +
@@ -85,7 +86,7 @@ BgTournament/
 │   ├── EngineConnection.cs             receive loop; one in-flight query; Closed task
 │   ├── IEngineChannel.cs               query seam (EngineConnection live, faked in tests)
 │   ├── RemoteEngineAgent.cs            IPlayAgent+ICubeAgent over the channel; taxonomy
-│   ├── PlayResolver.cs                 wire play → canonical hit-encoded candidate
+│   ├── PlayResolver.cs                 wire play → canonical hit-encoded candidate (the WirePlayKey hop projection)
 │   ├── CountingDiceSource.cs           IDiceSource wrapper counting rolls (fair-mode play-query roll index)
 │   ├── MatchClock.cs                   per-match Fischer clock over the TimeProvider seam; settlement reports
 │   ├── DecisionKind.cs                 the server's one decision vocabulary (clock evidence + query labels)
@@ -132,7 +133,7 @@ BgTournament/
     ├── ProtocolDocTests.cs             PROTOCOL.md examples stay canonical wire text
     ├── WireMappingTests.cs             field preservation + the no-double-flip pin
     ├── ReferenceBotTests.cs            legality sweep, determinism, empty play
-    ├── PlayResolverTests.cs            hit canonicalization + dance resolution
+    ├── PlayResolverTests.cs            hit restoration, route disambiguation, dance resolution
     ├── RemoteEngineAgentTests.cs       forfeit taxonomy over a scripted channel
     ├── ServerTestHarness.cs            TestEngine (raw-wire scripting) + helpers
     ├── ServerIntegrationTests.cs       handshake gate + taxonomy over TestServer
@@ -195,13 +196,23 @@ single re-expression anywhere in the system, and the no-double-flip pin fails
 if a flip ever creeps into the mapping. In a cube-response query the state
 shows the pre-double cube (`centered` or `opponent`, never `you`).
 
-**Play encoding and canonicalization.** Wire moves are `{from, to}` with hits
-deliberately not encoded. `WireMapping.ToUnresolvedPlay` reconstructs a
-hit-less `Play` that is safe only for legality matching (`DeduplicationKey`
-ignores hit signs) — `PlayResolver` resolves it to the generator's canonical
-hit-encoded candidate, which is what gets applied and recorded. An unmatched
-play is handed to `MatchRunner` verbatim so the legality verdict stays
-single-sourced in the runner.
+**Play encoding and canonicalization.** Wire moves are `{from, to}` single-die
+hops with hits deliberately not encoded — hits are board-derived facts the
+server reconstructs. `WireMapping.ToUnresolvedPlay` rebuilds the hit-less
+`Play` exactly as sent; `PlayResolver` resolves it to the generator's canonical
+hit-encoded candidate by an explicit wire-resolution projection (its private
+`WirePlayKey`): the unordered multiset of hit-stripped `(from, |to|)` hop
+pairs. The projection is **hit-insensitive** because the wire cannot express
+hits, and **route-sensitive** because two legal candidates can differ only in
+their hits (with a 3-2, 13/10\*/8 hits en route where 13/11/8 does not) — the
+hops the engine named are the only disambiguator. Substrate `Play` equality is
+deliberately not this match: it is fully hit-sensitive (a hit-less probe never
+equals a hitting candidate), and its canonical chain-merging collapses routes,
+so stripping candidate hits and comparing canonically could resolve the wrong
+candidate. The resolved candidate is what gets applied and recorded. An
+unmatched play is still handed to `MatchRunner` verbatim so the legality
+verdict stays single-sourced in the runner, whose validating `ApplyPlay`
+rejects it throw-before-mutate — the contract-violation forfeit.
 
 **Server shape.** `EngineSocketEndpoint` gates the handshake (version,
 non-empty unique name; every rejection is a named `rejected` message).
@@ -694,11 +705,14 @@ public sealed record AuditTerminalEvent(..., MatchStatus Status,            // "
   undispatchable. The helper's base-typed parameter makes this structurally
   hard to hit; don't add parallel serialization paths.
 - **`ToUnresolvedPlay` output must never be applied to a board.** It carries
-  no hit encoding, and candidate matching is hit-insensitive — so it can
-  *validate* as legal yet *apply* without sending the blot to the bar.
-  `PlayResolver` is the sole sanctioned consumer; the canonical candidate is
-  what gets applied and recorded. (The same validates-vs-applies asymmetry
-  exists in `MoveGenerator.ApplyPlay` itself — flagged umbrella-side.)
+  no hit encoding, so applying its moves verbatim would leave a hit blot
+  standing. `PlayResolver` is the sole sanctioned consumer: it matches by the
+  wire-level hop projection (hit-insensitive, route-sensitive — see "Play
+  encoding") and returns the generator's hit-encoded candidate, which is what
+  gets applied and recorded. The unmatched fallback is safe end to end
+  because the substrate's `ApplyPlay` is canonicalize-then-apply and rejects
+  (throw-before-mutate) any play that is not canonically legal — a hit-less
+  encoding of a hitting play now forfeits instead of corrupting the board.
 - **No flips in `WireMapping`, ever.** The substrate's `OpponentView` is the
   system's only re-expression; a flip in the mapping double-applies the frame
   rule. The pin: `ToWireState_OfOpponentView_IsTheResponderFrame_NoDoubleFlip`.
@@ -834,8 +848,9 @@ public sealed record AuditTerminalEvent(..., MatchStatus Status,            // "
   serializes `Play` moves with the raw sign-encoded destinations (negative =
   hit, 0 = bear-off) so rehydration rebuilds the exact substrate `Play`.
   Reusing `WireMapping.ToWireMoves` here would silently lose hits from every
-  stored transcript — replay would still look legal (matching is
-  hit-insensitive) while the audit record lied.
+  stored transcript — the rebuilt plays would no longer even equal the played
+  ones (canonical `Play` equality is hit-sensitive), and the audit record
+  would lie.
 - **The damage policy is tail-lenient, prefix-strict.** Only a journal's
   *final* unparseable line is a torn tail (crash mid-append) and dropped with a
   warning; a failure on any earlier line is corruption — the fold stops there

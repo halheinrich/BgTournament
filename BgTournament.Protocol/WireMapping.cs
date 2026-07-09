@@ -100,10 +100,12 @@ public static class WireMapping
     /// <summary>
     /// Build a <see cref="Play"/> from wire moves, exactly as sent — without
     /// hit encoding, because the wire carries none. The result is
-    /// <b>unresolved</b>: suitable for legality matching against generated
-    /// candidates (which compare on hit-insensitive keys), but not for
-    /// applying to a board — applying it would skip any hits. The server
-    /// resolves it to the matching canonical candidate before play continues.
+    /// <b>unresolved</b>: suitable only for the server's wire-resolution
+    /// match, a deliberately hit-insensitive hop-level projection (the wire's
+    /// own encoding altitude — not <see cref="Play"/> equality, which is
+    /// hit-sensitive), and never for applying to a board — applying it would
+    /// skip any hits. The server resolves it to the matching canonical
+    /// hit-encoded candidate before play continues.
     /// </summary>
     /// <exception cref="ArgumentNullException"><paramref name="moves"/> is null.</exception>
     /// <exception cref="ArgumentException">
