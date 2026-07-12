@@ -283,6 +283,39 @@ public class AdminAuthTests
     }
 
     // ---- configuration validation: a broken key set fails the boot ----
+    //
+    // The named reasons are pinned at the unit level (AdminApiKeys constructs
+    // and throws deterministically); the boot-level tests pin only that the
+    // host refuses to start — how WebApplicationFactory wraps and surfaces a
+    // startup exception is host plumbing, not our contract to assert on.
+
+    [Fact]
+    public void DuplicateKeyValues_NamedRejection()
+    {
+        var ex = Assert.Throws<InvalidOperationException>(() => new AdminApiKeys(
+            Microsoft.Extensions.Options.Options.Create(new AdminOptions
+            {
+                ApiKeys = new Dictionary<string, string>
+                {
+                    ["alice"] = "same-secret",
+                    ["bob"] = "same-secret",
+                },
+            }),
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<AdminApiKeys>.Instance));
+        Assert.Contains("share one key value", ex.Message);
+    }
+
+    [Fact]
+    public void BlankKeyValue_NamedRejection()
+    {
+        var ex = Assert.Throws<InvalidOperationException>(() => new AdminApiKeys(
+            Microsoft.Extensions.Options.Options.Create(new AdminOptions
+            {
+                ApiKeys = new Dictionary<string, string> { ["alice"] = " " },
+            }),
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<AdminApiKeys>.Instance));
+        Assert.Contains("blank key value", ex.Message);
+    }
 
     [Fact]
     public void DuplicateKeyValues_FailStartup()
@@ -293,9 +326,7 @@ public class AdminAuthTests
             ["Admin:ApiKeys:bob"] = "same-secret",
         });
 
-        var ex = Record.Exception(() => factory.CreateClient());
-        Assert.NotNull(ex);
-        Assert.Contains("share one key value", ex.ToString());
+        Assert.NotNull(Record.Exception(() => factory.CreateClient()));
     }
 
     [Fact]
@@ -306,9 +337,7 @@ public class AdminAuthTests
             ["Admin:ApiKeys:alice"] = " ",
         });
 
-        var ex = Record.Exception(() => factory.CreateClient());
-        Assert.NotNull(ex);
-        Assert.Contains("blank key value", ex.ToString());
+        Assert.NotNull(Record.Exception(() => factory.CreateClient()));
     }
 
     // ---- rehydration: the actor survives a restart ----
