@@ -365,6 +365,11 @@ string — the handshake-rejection funnel one gate over; the presented key
 value is never recorded), a new event type and therefore
 `ServerSchemaVersion` 2. The Api response shapes are untouched — `createdBy`
 is journal-only until a surface needs it — and the wire sees none of this.
+The gate is deliberately plain middleware rather than the ASP.NET Core
+authentication framework (no policies, schemes, or claims consumers exist to
+justify the ceremony, and the framework's challenge path fights the
+`ErrorResponse`-body contract); a second scheme or per-endpoint authorization
+is the trigger to migrate.
 
 **Replay shape.** `GET /matches/{matchId}/games` projects a Completed match's
 retained transcripts onto the replay contract (`ReplayProjection`). The
