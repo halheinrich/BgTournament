@@ -24,4 +24,15 @@ public sealed record HelloMessage : ProtocolMessage
 
     /// <summary>Optional author attribution, for records and diagnostics.</summary>
     public string? Author { get; init; }
+
+    /// <summary>
+    /// Optional registration key, issued out-of-band when the engine was
+    /// registered on the server's roster (PROTOCOL.md §3.1). Omitted by
+    /// unregistered engines — additive under §2's ignore-unknown-fields rule,
+    /// so the protocol stays version 1. A server enforcing registration
+    /// rejects hellos without a valid key; a presented key is validated by
+    /// <em>every</em> server, enforcing or not, and must belong to the roster
+    /// identity named in <see cref="EngineName"/>.
+    /// </summary>
+    public string? EngineKey { get; init; }
 }

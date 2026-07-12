@@ -3,6 +3,7 @@ using System.Text;
 using BgTournament.Api;
 using BgTournament.Server;
 using BgTournament.Server.Persistence;
+using Microsoft.Extensions.Options;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -22,6 +23,11 @@ builder.Services.AddSingleton<EngineRegistry>();
 builder.Services.AddSingleton<IJournalStore, FileJournalStore>();
 builder.Services.AddSingleton<MatchService>();
 builder.Services.AddSingleton<TournamentService>();
+
+// The engine roster (registration/originality): folded from its journal
+// segments at startup, mutated only through the admin endpoints below. The
+// container disposes it at shutdown, closing this session's segment.
+builder.Services.AddSingleton<RosterService>();
 builder.Services.AddSingleton<JournalRehydrator>();
 
 // The server-session journal (engine lifecycle evidence): one singleton, also
@@ -37,6 +43,28 @@ var app = builder.Build();
 // first request, and an orphaned Running journal (the server died under it)
 // folds to an Interrupted terminal record with all evidence intact.
 await app.Services.GetRequiredService<JournalRehydrator>().RehydrateAsync();
+
+// Boot-time policy coherence checks — warnings, not failures: both states
+// are reachable and repairable while the server runs (register engines /
+// configure admin keys and restart), and an enforcing server with nothing
+// registered is safe (it rejects every engine), just probably not intended.
+if (app.Services.GetRequiredService<IOptions<TournamentOptions>>().Value.EnginePolicy
+    == EnginePolicy.Registered)
+{
+    if (!app.Services.GetRequiredService<RosterService>().HasActiveEngines)
+    {
+        app.Logger.LogWarning(
+            "EnginePolicy is Registered but the roster has no active engines — every engine "
+                + "connection will be rejected until one is registered (POST /roster).");
+    }
+
+    if (!app.Services.GetRequiredService<AdminApiKeys>().Enforcing)
+    {
+        app.Logger.LogWarning(
+            "EnginePolicy is Registered but the admin surface is serving anonymously — anyone "
+                + "reaching the port can register engines. Configure Admin:ApiKeys to close this.");
+    }
+}
 
 app.UseWebSockets();
 
@@ -199,6 +227,70 @@ app.MapGet("/tournaments/{tournamentId}", (string tournamentId, TournamentServic
     tournaments.TryGetSummary(tournamentId, out var summary)
         ? Results.Ok(summary)
         : Results.NotFound());
+
+// The engine roster (registration under the attestation posture). All of it
+// rides behind the admin identity gate like every other admin endpoint;
+// registration is a deliberate administrative act, never self-serve, and the
+// acting admin's identity stamps each roster journal event. The register and
+// rotate responses carry the issued engine key exactly once — the server
+// retains only its salted hash.
+app.MapGet("/roster", (RosterService roster) =>
+    Results.Ok(roster.List().Select(ApiMapping.ToEntry)));
+
+app.MapGet("/roster/{name}", (string name, RosterService roster) =>
+    roster.TryGet(name, out var engine)
+        ? Results.Ok(engine.ToEntry())
+        : Results.NotFound());
+
+app.MapPost("/roster", (RegisterEngineRequest request, AdminActor? actor, RosterService roster) =>
+{
+    var (engine, engineKey, error, detail) = roster.Register(
+        request.Name, request.Attestation, actor?.Name);
+    return error switch
+    {
+        RosterError.None => Results.Ok(new EngineKeyGrant(engine!.ToEntry(), engineKey!)),
+        RosterError.AlreadyRegistered => Results.Conflict(new ErrorResponse(detail!)),
+        _ => Results.BadRequest(new ErrorResponse(detail!)),
+    };
+});
+
+app.MapPost(
+    "/roster/{name}/attestation",
+    (string name, EngineAttestation attestation, AdminActor? actor, RosterService roster) =>
+    {
+        var (engine, error, detail) = roster.DeclareAttestation(name, attestation, actor?.Name);
+        return error switch
+        {
+            RosterError.None => Results.Ok(engine!.ToEntry()),
+            RosterError.NotRegistered => Results.NotFound(new ErrorResponse(detail!)),
+            RosterError.Deactivated => Results.Conflict(new ErrorResponse(detail!)),
+            _ => Results.BadRequest(new ErrorResponse(detail!)),
+        };
+    });
+
+app.MapPost("/roster/{name}/rotate", (string name, AdminActor? actor, RosterService roster) =>
+{
+    var (engine, engineKey, error, detail) = roster.RotateKey(name, actor?.Name);
+    return error switch
+    {
+        RosterError.None => Results.Ok(new EngineKeyGrant(engine!.ToEntry(), engineKey!)),
+        RosterError.NotRegistered => Results.NotFound(new ErrorResponse(detail!)),
+        RosterError.Deactivated => Results.Conflict(new ErrorResponse(detail!)),
+        _ => Results.BadRequest(new ErrorResponse(detail!)),
+    };
+});
+
+app.MapPost("/roster/{name}/deactivate", (string name, AdminActor? actor, RosterService roster) =>
+{
+    var (engine, error, detail) = roster.Deactivate(name, actor?.Name);
+    return error switch
+    {
+        RosterError.None => Results.Ok(engine!.ToEntry()),
+        RosterError.NotRegistered => Results.NotFound(new ErrorResponse(detail!)),
+        RosterError.Deactivated => Results.Conflict(new ErrorResponse(detail!)),
+        _ => Results.BadRequest(new ErrorResponse(detail!)),
+    };
+});
 
 app.Run();
 

@@ -39,12 +39,18 @@ public class GoldenWireTests
             EngineName = "MyBot",
             EngineVersion = "2.1",
             Author = "Jane Doe",
+            EngineKey = "5f2c9a1d3e8b4c6f0a7d2e9b1c4f8a3d6e0b5c2f9a4d7e1b8c3f6a0d5e2b9c4f",
         };
         AssertGolden(
             message,
-            """{"type":"hello","protocolVersion":1,"engineName":"MyBot","engineVersion":"2.1","author":"Jane Doe"}""");
+            """{"type":"hello","protocolVersion":1,"engineName":"MyBot","engineVersion":"2.1","author":"Jane Doe","engineKey":"5f2c9a1d3e8b4c6f0a7d2e9b1c4f8a3d6e0b5c2f9a4d7e1b8c3f6a0d5e2b9c4f"}""");
     }
 
+    /// <summary>
+    /// A keyless hello is byte-identical to the pre-registration wire — the
+    /// engineKey addition is invisible to every engine that does not send it
+    /// (the fair-dice/clock additive precedent, third use).
+    /// </summary>
     [Fact]
     public void Hello_OptionalFieldsAbsent_NotNull()
     {

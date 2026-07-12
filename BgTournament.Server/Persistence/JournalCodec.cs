@@ -51,9 +51,21 @@ internal static class JournalCodec
     /// </summary>
     public const int ServerSchemaVersion = 2;
 
+    /// <summary>
+    /// The roster-journal schema version — the fourth independently versioned
+    /// durable format. Unlike the server journal, roster segments <em>are</em>
+    /// folded (the roster's state is their fold), so an unknown version must
+    /// be detected and the segment skipped whole before anything folds.
+    /// </summary>
+    public const int RosterSchemaVersion = 1;
+
     /// <summary>Whether this server can fold a match/tournament journal stamped <paramref name="schemaVersion"/>.</summary>
     public static bool IsSupported(int schemaVersion) =>
         schemaVersion >= MinSchemaVersion && schemaVersion <= SchemaVersion;
+
+    /// <summary>Whether this server can fold a roster segment stamped <paramref name="schemaVersion"/>.</summary>
+    public static bool IsRosterSupported(int schemaVersion) =>
+        schemaVersion >= 1 && schemaVersion <= RosterSchemaVersion;
 
     /// <summary>
     /// Journal conventions: camelCase properties, enums as the strings pinned
@@ -91,6 +103,14 @@ internal static class JournalCodec
         return JsonSerializer.Serialize(journalEvent, Options);
     }
 
+    /// <summary>Serialize a roster-journal event to its JSONL line (one JSON object, no indentation).</summary>
+    /// <exception cref="ArgumentNullException"><paramref name="journalEvent"/> is null.</exception>
+    public static string Serialize(RosterJournalEvent journalEvent)
+    {
+        ArgumentNullException.ThrowIfNull(journalEvent);
+        return JsonSerializer.Serialize(journalEvent, Options);
+    }
+
     /// <summary>
     /// Deserialize one match-journal line. Any malformed line — invalid JSON,
     /// JSON <c>null</c>, a missing or unknown <c>"type"</c>, a missing
@@ -120,6 +140,15 @@ internal static class JournalCodec
     /// <exception cref="JsonException">The line is not a well-formed server-journal event.</exception>
     public static ServerJournalEvent DeserializeServerEvent(string line) =>
         Deserialize<ServerJournalEvent>(line);
+
+    /// <summary>
+    /// Deserialize one roster-journal line; the same single
+    /// <see cref="JsonException"/> funnel as <see cref="DeserializeMatchEvent"/>.
+    /// </summary>
+    /// <exception cref="ArgumentNullException"><paramref name="line"/> is null.</exception>
+    /// <exception cref="JsonException">The line is not a well-formed roster-journal event.</exception>
+    public static RosterJournalEvent DeserializeRosterEvent(string line) =>
+        Deserialize<RosterJournalEvent>(line);
 
     private static TEvent Deserialize<TEvent>(string line) where TEvent : class
     {

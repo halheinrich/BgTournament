@@ -28,6 +28,7 @@ public sealed class EngineClient
     private readonly ICubeAgent _cubeAgent;
     private readonly ILogger<EngineClient>? _logger;
     private readonly Action<DiceVerificationReport>? _onDiceVerified;
+    private readonly string? _engineKey;
 
     /// <summary>Create a client serving queries from the given local agents.</summary>
     /// <param name="identity">The engine's handshake identity.</param>
@@ -42,13 +43,24 @@ public sealed class EngineClient
     /// and a failed verification is <em>reported</em>, not thrown — the policy on a
     /// cheating server belongs to the consumer, not the serve loop.
     /// </param>
+    /// <param name="engineKey">
+    /// Optional registration key (PROTOCOL.md §3.1), issued show-once when the
+    /// engine was registered on the server's roster; sent on the hello.
+    /// Required by a server enforcing registration; validated by any server it
+    /// is presented to, so the identity's name must be the registered name.
+    /// Deliberately a separate parameter, not part of
+    /// <see cref="EngineIdentity"/> — the identity is loggable metadata, the
+    /// key is a secret. Omit it (the default) for a hello byte-identical to
+    /// the pre-registration wire.
+    /// </param>
     /// <exception cref="ArgumentNullException">A required argument is null.</exception>
     public EngineClient(
         EngineIdentity identity,
         IPlayAgent playAgent,
         ICubeAgent cubeAgent,
         ILogger<EngineClient>? logger = null,
-        Action<DiceVerificationReport>? onDiceVerified = null)
+        Action<DiceVerificationReport>? onDiceVerified = null,
+        string? engineKey = null)
     {
         ArgumentNullException.ThrowIfNull(identity);
         ArgumentNullException.ThrowIfNull(playAgent);
@@ -58,6 +70,7 @@ public sealed class EngineClient
         _cubeAgent = cubeAgent;
         _logger = logger;
         _onDiceVerified = onDiceVerified;
+        _engineKey = engineKey;
     }
 
     /// <summary>
@@ -98,6 +111,7 @@ public sealed class EngineClient
                 EngineName = _identity.Name,
                 EngineVersion = _identity.Version,
                 Author = _identity.Author,
+                EngineKey = _engineKey,
             },
             cancellationToken).ConfigureAwait(false);
 

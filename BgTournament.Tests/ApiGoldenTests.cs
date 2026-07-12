@@ -419,4 +419,59 @@ public class ApiGoldenTests
                 DiceAlgorithm: "hmac-sha256-dice-v1",
                 DiceKey: "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"),
             """{"type":"terminal","at":null,"status":"interrupted","winner":null,"seatOneScore":null,"seatTwoScore":null,"forfeitedBy":null,"forfeitCause":null,"detail":"The server was interrupted while this match was running; the record was reconstructed from its journal.","diceAlgorithm":"hmac-sha256-dice-v1","diceKey":"00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"}""");
+
+    // ---- the roster contracts (registration/originality) ----
+
+    [Fact]
+    public void EngineAttestation_AllFields() =>
+        AssertGolden(
+            new EngineAttestation(
+                ["Jane Doe", "Ken Kata"], Origin: "Original neural-net engine, self-trained.",
+                DerivedFrom: "gnubg 1.08 evaluation weights"),
+            """{"authors":["Jane Doe","Ken Kata"],"origin":"Original neural-net engine, self-trained.","derivedFrom":"gnubg 1.08 evaluation weights"}""");
+
+    /// <summary>A null derivedFrom declares an original work.</summary>
+    [Fact]
+    public void EngineAttestation_OriginalWork() =>
+        AssertGolden(
+            new EngineAttestation(["Jane Doe"], Origin: "Original work."),
+            """{"authors":["Jane Doe"],"origin":"Original work.","derivedFrom":null}""");
+
+    [Fact]
+    public void RegisterEngineRequest_Golden() =>
+        AssertGolden(
+            new RegisterEngineRequest(
+                "MyBot", new EngineAttestation(["Jane Doe"], Origin: "Original work.")),
+            """{"name":"MyBot","attestation":{"authors":["Jane Doe"],"origin":"Original work.","derivedFrom":null}}""");
+
+    [Fact]
+    public void RosterEntry_Active_Golden() =>
+        AssertGolden(
+            new RosterEntry(
+                "MyBot", new EngineAttestation(["Jane Doe"], Origin: "Original work."),
+                Active: true, RegisteredAtUtc: StartedAt, RegisteredBy: "director",
+                KeyRotatedAtUtc: null, DeactivatedAtUtc: null),
+            """{"name":"MyBot","attestation":{"authors":["Jane Doe"],"origin":"Original work.","derivedFrom":null},"active":true,"registeredAtUtc":"2026-07-05T12:00:00+00:00","registeredBy":"director","keyRotatedAtUtc":null,"deactivatedAtUtc":null}""");
+
+    /// <summary>An anonymous registration (open admin surface) and a full lifecycle: rotated, then deactivated.</summary>
+    [Fact]
+    public void RosterEntry_DeactivatedAnonymous_Golden() =>
+        AssertGolden(
+            new RosterEntry(
+                "MyBot", new EngineAttestation(["Jane Doe"], Origin: "Original work."),
+                Active: false, RegisteredAtUtc: StartedAt, RegisteredBy: null,
+                KeyRotatedAtUtc: EndedAt, DeactivatedAtUtc: EndedAt),
+            """{"name":"MyBot","attestation":{"authors":["Jane Doe"],"origin":"Original work.","derivedFrom":null},"active":false,"registeredAtUtc":"2026-07-05T12:00:00+00:00","registeredBy":null,"keyRotatedAtUtc":"2026-07-05T12:30:00+00:00","deactivatedAtUtc":"2026-07-05T12:30:00+00:00"}""");
+
+    /// <summary>The show-once issuance envelope: the only surface the plaintext key ever crosses.</summary>
+    [Fact]
+    public void EngineKeyGrant_Golden() =>
+        AssertGolden(
+            new EngineKeyGrant(
+                new RosterEntry(
+                    "MyBot", new EngineAttestation(["Jane Doe"], Origin: "Original work."),
+                    Active: true, RegisteredAtUtc: StartedAt, RegisteredBy: "director",
+                    KeyRotatedAtUtc: null, DeactivatedAtUtc: null),
+                EngineKey: "5f2c9a1d3e8b4c6f0a7d2e9b1c4f8a3d6e0b5c2f9a4d7e1b8c3f6a0d5e2b9c4f"),
+            """{"entry":{"name":"MyBot","attestation":{"authors":["Jane Doe"],"origin":"Original work.","derivedFrom":null},"active":true,"registeredAtUtc":"2026-07-05T12:00:00+00:00","registeredBy":"director","keyRotatedAtUtc":null,"deactivatedAtUtc":null},"engineKey":"5f2c9a1d3e8b4c6f0a7d2e9b1c4f8a3d6e0b5c2f9a4d7e1b8c3f6a0d5e2b9c4f"}""");
 }

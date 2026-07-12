@@ -31,17 +31,20 @@ internal sealed class JournalRehydrator
     private readonly IJournalStore _store;
     private readonly MatchService _matches;
     private readonly TournamentService _tournaments;
+    private readonly RosterService _roster;
     private readonly ILogger<JournalRehydrator> _logger;
 
     public JournalRehydrator(
         IJournalStore store,
         MatchService matches,
         TournamentService tournaments,
+        RosterService roster,
         ILogger<JournalRehydrator> logger)
     {
         _store = store;
         _matches = matches;
         _tournaments = tournaments;
+        _roster = roster;
         _logger = logger;
     }
 
@@ -57,6 +60,8 @@ internal sealed class JournalRehydrator
             FoldTournament);
         _tournaments.Restore(tournamentRecords);
 
+        _roster.Restore(await ReadRosterEventsAsync());
+
         if (matchRecords.Count > 0 || tournamentRecords.Count > 0)
         {
             _logger.LogInformation(
@@ -64,6 +69,52 @@ internal sealed class JournalRehydrator
                     + "from the journal store.",
                 matchRecords.Count, tournamentRecords.Count);
         }
+    }
+
+    /// <summary>
+    /// Read the roster's full history: every segment's trusted events (the
+    /// standard damage policy per file — a corrupt segment folds its trusted
+    /// prefix, loudly, and later segments still fold; roster events carry
+    /// whole state, so a dropped suffix leaves stale-but-honest entries the
+    /// admin repairs by rotation), ordered by segment header time with an
+    /// ordinal-id tiebreak. Segment headers validate the version and are not
+    /// themselves folded.
+    /// </summary>
+    private async Task<IReadOnlyList<RosterJournalEvent>> ReadRosterEventsAsync()
+    {
+        var segments = new List<(string Id, DateTimeOffset At, IReadOnlyList<RosterJournalEvent> Events)>();
+        foreach (string id in _store.ListJournalIds(JournalKind.Roster))
+        {
+            var journal = await JournalReader.ReadTrustedEventsAsync(
+                _store, JournalKind.Roster, id, JournalCodec.DeserializeRosterEvent, _logger);
+            if (journal is not { } trusted || trusted.Events.Count == 0)
+            {
+                continue;
+            }
+
+            if (trusted.Events[0] is not RosterStartedEvent header)
+            {
+                _logger.LogError(
+                    "The roster segment '{Id}' does not begin with a started header; skipping it.", id);
+                continue;
+            }
+
+            if (!JournalCodec.IsRosterSupported(header.SchemaVersion))
+            {
+                _logger.LogError(
+                    "The roster segment '{Id}' carries schema version {Version}, which this server "
+                        + "does not know (it folds 1 through {Known}); skipping it.",
+                    id, header.SchemaVersion, JournalCodec.RosterSchemaVersion);
+                continue;
+            }
+
+            segments.Add((id, header.At, trusted.Events.Skip(1).ToArray()));
+        }
+
+        segments.Sort((a, b) => a.At != b.At
+            ? a.At.CompareTo(b.At)
+            : string.CompareOrdinal(a.Id, b.Id));
+        return segments.SelectMany(segment => segment.Events).ToArray();
     }
 
     /// <summary>

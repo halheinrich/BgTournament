@@ -6,9 +6,10 @@ namespace BgTournament.Server.Persistence;
 /// <summary>
 /// The file-backed journal store: one <c>.jsonl</c> file per journal under
 /// <see cref="PersistenceOptions.DataDirectory"/> — <c>matches/&lt;id&gt;.jsonl</c>,
-/// <c>tournaments/&lt;id&gt;.jsonl</c>, and <c>server/&lt;id&gt;.jsonl</c>
-/// (one segment per server session). Ids are server-generated GUID-"N"
-/// values, so they are filesystem-safe by construction.
+/// <c>tournaments/&lt;id&gt;.jsonl</c>, <c>server/&lt;id&gt;.jsonl</c>
+/// (one segment per server session), and <c>roster/&lt;id&gt;.jsonl</c>
+/// (one segment per roster-mutating session). Ids are server-generated
+/// GUID-"N" values, so they are filesystem-safe by construction.
 /// </summary>
 internal sealed class FileJournalStore : IJournalStore
 {
@@ -59,6 +60,7 @@ internal sealed class FileJournalStore : IJournalStore
             JournalKind.Match => "matches",
             JournalKind.Tournament => "tournaments",
             JournalKind.Server => "server",
+            JournalKind.Roster => "roster",
             _ => throw new InvalidOperationException($"Unhandled JournalKind value: {kind}."),
         });
 

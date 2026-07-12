@@ -73,6 +73,46 @@ records and diagnostics.
 After `welcome`, the engine stays connected and idle until the server seats it
 in a match. It may play any number of matches over one connection.
 
+### 3.1 Registration and `engineKey` (optional)
+
+A server may run one of two engine policies:
+
+- **Open** — any engine may connect (the behavior described above; the
+  reference server's default).
+- **Registered** — only engines registered on the server's roster may
+  connect. Registration is an administrative act on the server side: an
+  operator records the engine and its provenance declaration, and the server
+  issues a secret **engine key** — shown exactly once at registration; the
+  server retains only a salted hash. Key delivery to the engine author is
+  out-of-band (not part of this protocol).
+
+A registered engine presents its key as an optional `engineKey` field on the
+hello (additive under §2's unknown-field rule — the protocol stays version 1,
+and an unregistered engine sends exactly the hello it always did):
+
+```json
+{"type":"hello","protocolVersion":1,"engineName":"MyBot","engineKey":"5f2c9a1d3e8b4c6f0a7d2e9b1c4f8a3d6e0b5c2f9a4d7e1b8c3f6a0d5e2b9c4f"}
+```
+
+Rules, both policies:
+
+- A **presented key is always validated**, even by an Open server: an
+  unrecognized key is rejected, never silently ignored — a key mismatch
+  between engine and server must fail loudly, not degrade to an anonymous
+  connection.
+- The key resolves the roster identity, and `engineName` must equal that
+  identity's registered name; a disagreement is rejected. The key
+  authenticates the name — it does not rename the engine.
+- A key belonging to a deactivated roster entry is rejected.
+
+Under **Registered**, a hello without an `engineKey` (or with an invalid one)
+is rejected with a named reason. Under **Open**, a keyless hello connects as
+before.
+
+The key is a bearer secret in a plaintext field: on untrusted networks,
+terminate the connection over `wss://` (TLS) — transport security is a
+deployment concern, not a protocol change.
+
 ## 4. The frame rule
 
 **Every state you receive is expressed in your own frame.** Positive board
@@ -456,6 +496,11 @@ versions:
   the rolls, but not that it did not cherry-pick a favorable committed
   sequence — v1 uses server-only entropy. Contributory nonces close this in a
   future version (§8.4).
+- **Bearer-token registration.** The `engineKey` (§3.1) is a static bearer
+  secret sent in the clear at the protocol level; `wss://` termination is the
+  transit answer. Keypair challenge–response (the server proves possession
+  without the secret crossing the wire) is the recorded upgrade path for a
+  future version.
 
 ## 12. Version history
 
@@ -471,3 +516,8 @@ versions:
     under §2's unknown-field rule; an unaware engine plays identically —
     though in a time-control match its flag can still fall, which is a
     server-side rule, not a wire change.
+  - *Minor addition (registration):* the optional `hello.engineKey` field and
+    the server-side Open/Registered engine policy (§3.1). Additive under §2's
+    unknown-field rule; a keyless hello is byte-identical to before — though
+    an enforcing server rejects it, which is a server-side policy, not a wire
+    change.

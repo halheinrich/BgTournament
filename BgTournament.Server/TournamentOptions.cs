@@ -19,6 +19,15 @@ internal sealed class TournamentOptions
     /// <summary>Seconds a new connection has to complete the hello handshake.</summary>
     public double HandshakeTimeoutSeconds { get; set; } = 10;
 
+    /// <summary>
+    /// Who may connect on the engine wire. <see cref="EnginePolicy.Open"/>
+    /// (the default) admits any engine; <see cref="EnginePolicy.Registered"/>
+    /// admits only roster identities presenting a valid <c>engineKey</c>.
+    /// An unknown value fails configuration binding — a policy typo must
+    /// never silently serve open.
+    /// </summary>
+    public EnginePolicy EnginePolicy { get; set; } = EnginePolicy.Open;
+
     /// <summary>The per-decision timeout as a <see cref="TimeSpan"/>.</summary>
     public TimeSpan DecisionTimeout => TimeSpan.FromSeconds(DecisionTimeoutSeconds);
 

@@ -58,10 +58,14 @@ public class JournalGoldenTests
         Assert.Equal(2, JournalCodec.SchemaVersion);
         Assert.Equal(1, JournalCodec.MinSchemaVersion);
         Assert.Equal(2, JournalCodec.ServerSchemaVersion);
+        Assert.Equal(1, JournalCodec.RosterSchemaVersion);
         Assert.True(JournalCodec.IsSupported(1));
         Assert.True(JournalCodec.IsSupported(2));
         Assert.False(JournalCodec.IsSupported(0));
         Assert.False(JournalCodec.IsSupported(3));
+        Assert.True(JournalCodec.IsRosterSupported(1));
+        Assert.False(JournalCodec.IsRosterSupported(0));
+        Assert.False(JournalCodec.IsRosterSupported(2));
     }
 
     [Fact]
@@ -281,6 +285,74 @@ public class JournalGoldenTests
             new TournamentTerminalEvent(
                 At, JournalTournamentOutcome.Aborted, Detail: "The server stopped the tournament."),
             $$"""{"type":"terminal","at":"{{AtWire}}","status":"aborted","detail":"The server stopped the tournament."}""");
+
+    // ---- the roster journal (registration history; independent schema) ----
+
+    private static void AssertGolden(RosterJournalEvent journalEvent, string golden)
+    {
+        Assert.Equal(golden, JournalCodec.Serialize(journalEvent));
+        Assert.Equal(golden, JournalCodec.Serialize(JournalCodec.DeserializeRosterEvent(golden)));
+    }
+
+    private static readonly RosterCredential Credential = new(
+        Scheme: "sha256-salted-v1",
+        Salt: "00112233445566778899aabbccddeeff",
+        Hash: "aa5566778899aabbccddeeff0011223344556677aabbccddeeff001122334455");
+
+    private const string CredentialWire =
+        """{"scheme":"sha256-salted-v1","salt":"00112233445566778899aabbccddeeff","hash":"aa5566778899aabbccddeeff0011223344556677aabbccddeeff001122334455"}""";
+
+    [Fact]
+    public void RosterStarted_Golden() =>
+        AssertGolden(
+            new RosterStartedEvent(At, JournalCodec.RosterSchemaVersion),
+            $$"""{"type":"started","schemaVersion":1,"at":"{{AtWire}}"}""");
+
+    /// <summary>
+    /// The registration record: identity, declaration, salted credential —
+    /// the pin also documents that no plaintext key ever appears here.
+    /// </summary>
+    [Fact]
+    public void EngineRegistered_Golden() =>
+        AssertGolden(
+            new EngineRegisteredEvent(
+                At, "MyBot",
+                new RosterAttestation(
+                    ["Jane Doe", "Ken Kata"], "Original neural-net engine.",
+                    DerivedFrom: "gnubg 1.08 evaluation weights"),
+                Credential, Actor: "director"),
+            $$$"""{"type":"registered","at":"{{{AtWire}}}","name":"MyBot","attestation":{"authors":["Jane Doe","Ken Kata"],"origin":"Original neural-net engine.","derivedFrom":"gnubg 1.08 evaluation weights"},"credential":{{{CredentialWire}}},"actor":"director"}""");
+
+    /// <summary>An original work registered anonymously: derivedFrom and actor are omitted, not null.</summary>
+    [Fact]
+    public void EngineRegistered_AnonymousOriginal_OmitsAbsentFields() =>
+        AssertGolden(
+            new EngineRegisteredEvent(
+                At, "MyBot",
+                new RosterAttestation(["Jane Doe"], "Original work.", DerivedFrom: null),
+                Credential, Actor: null),
+            $$$"""{"type":"registered","at":"{{{AtWire}}}","name":"MyBot","attestation":{"authors":["Jane Doe"],"origin":"Original work."},"credential":{{{CredentialWire}}}}""");
+
+    [Fact]
+    public void AttestationDeclared_Golden() =>
+        AssertGolden(
+            new AttestationDeclaredEvent(
+                At, "MyBot",
+                new RosterAttestation(["Jane Doe"], "Corrected: derived work.", "BgRLEngine parity model"),
+                Actor: "director"),
+            $$"""{"type":"attestation","at":"{{AtWire}}","name":"MyBot","attestation":{"authors":["Jane Doe"],"origin":"Corrected: derived work.","derivedFrom":"BgRLEngine parity model"},"actor":"director"}""");
+
+    [Fact]
+    public void CredentialRotated_Golden() =>
+        AssertGolden(
+            new CredentialRotatedEvent(At, "MyBot", Credential, Actor: "director"),
+            $$$"""{"type":"credentialRotated","at":"{{{AtWire}}}","name":"MyBot","credential":{{{CredentialWire}}},"actor":"director"}""");
+
+    [Fact]
+    public void EngineDeactivated_Golden() =>
+        AssertGolden(
+            new EngineDeactivatedEvent(At, "MyBot", Actor: "director"),
+            $$"""{"type":"deactivated","at":"{{AtWire}}","name":"MyBot","actor":"director"}""");
 
     // ---- the server journal (engine lifecycle evidence; independent schema) ----
 

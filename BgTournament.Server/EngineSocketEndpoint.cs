@@ -9,7 +9,9 @@ namespace BgTournament.Server;
 
 /// <summary>
 /// The <c>/engine</c> WebSocket endpoint: accept, run the hello handshake
-/// (PROTOCOL.md §3), register the engine, then hold the connection open for
+/// (PROTOCOL.md §3) — including the roster gate (§3.1: a presented
+/// <c>engineKey</c> is always validated; a Registered-policy server refuses
+/// keyless hellos) — register the engine, then hold the connection open for
 /// its lifetime. Every rejection sends a named <c>rejected</c> message before
 /// closing, so engine authors see why — and journals the same reason to the
 /// server journal, so the arbitration record sees it too (one funnel, one
@@ -28,19 +30,22 @@ internal static class EngineSocketEndpoint
 
         var registry = context.RequestServices.GetRequiredService<EngineRegistry>();
         var options = context.RequestServices.GetRequiredService<IOptions<TournamentOptions>>().Value;
+        var roster = context.RequestServices.GetRequiredService<RosterService>();
         var serverJournal = context.RequestServices.GetRequiredService<ServerJournal>();
         var logger = context.RequestServices
             .GetRequiredService<ILoggerFactory>()
             .CreateLogger("BgTournament.Server.EngineSocketEndpoint");
 
         using var socket = await context.WebSockets.AcceptWebSocketAsync();
-        await RunConnectionAsync(socket, registry, options, serverJournal, logger, context.RequestAborted);
+        await RunConnectionAsync(
+            socket, registry, options, roster, serverJournal, logger, context.RequestAborted);
     }
 
     private static async Task RunConnectionAsync(
         WebSocket socket,
         EngineRegistry registry,
         TournamentOptions options,
+        RosterService roster,
         ServerJournal serverJournal,
         ILogger logger,
         CancellationToken cancellationToken)
@@ -98,6 +103,50 @@ internal static class EngineSocketEndpoint
         if (claimedName is null)
         {
             await RejectAsync(channel, socket, serverJournal, "engineName must be non-empty.");
+            return;
+        }
+
+        // Registration (PROTOCOL.md §3.1). A presented engineKey is always
+        // validated — enforcing or not, an unrecognized key must fail loudly,
+        // never silently degrade to an anonymous connection. The key resolves
+        // the roster identity; the claimed name must match it (the key
+        // authenticates the name, it does not rename the engine). Only under
+        // the Registered policy is a keyless hello itself refused.
+        if (hello.EngineKey is { } engineKey)
+        {
+            if (!roster.TryResolveKey(engineKey, out var registered))
+            {
+                await RejectAsync(
+                    channel, socket, serverJournal,
+                    roster.List().Count == 0
+                        ? "This server has no engine roster; omit engineKey."
+                        : "The presented engineKey is not recognized (rotated, or never issued by this server).",
+                    claimedName);
+                return;
+            }
+
+            if (!registered.Active)
+            {
+                await RejectAsync(
+                    channel, socket, serverJournal,
+                    "The registered engine this key belongs to is deactivated.", claimedName);
+                return;
+            }
+
+            if (!string.Equals(registered.Name, claimedName, StringComparison.Ordinal))
+            {
+                await RejectAsync(
+                    channel, socket, serverJournal,
+                    "engineName does not match the engine this engineKey is registered to.", claimedName);
+                return;
+            }
+        }
+        else if (options.EnginePolicy == EnginePolicy.Registered)
+        {
+            await RejectAsync(
+                channel, socket, serverJournal,
+                "This server admits registered engines only; present your engineKey in the hello.",
+                claimedName);
             return;
         }
 

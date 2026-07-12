@@ -107,6 +107,26 @@ internal static class JournalMapping
             record.ForfeitCause is { } cause ? ToJournal(cause) : null,
             record.Detail);
 
+    /// <summary>An engine's registration, for the roster journal: identity, declaration, salted credential — never the key.</summary>
+    public static EngineRegisteredEvent ToRegisteredEvent(
+        string name, EngineAttestation attestation, EngineCredential credential, string? actor,
+        DateTimeOffset at) =>
+        new(at, name, ToJournal(attestation), ToJournal(credential), actor);
+
+    /// <summary>A re-declared attestation, for the roster journal.</summary>
+    public static AttestationDeclaredEvent ToAttestationEvent(
+        string name, EngineAttestation attestation, string? actor, DateTimeOffset at) =>
+        new(at, name, ToJournal(attestation), actor);
+
+    /// <summary>A key rotation, for the roster journal: the new salted credential — never the key.</summary>
+    public static CredentialRotatedEvent ToRotatedEvent(
+        string name, EngineCredential credential, string? actor, DateTimeOffset at) =>
+        new(at, name, ToJournal(credential), actor);
+
+    /// <summary>An engine's deactivation, for the roster journal.</summary>
+    public static EngineDeactivatedEvent ToDeactivatedEvent(string name, string? actor, DateTimeOffset at) =>
+        new(at, name, actor);
+
     /// <summary>The journal header for a freshly created tournament.</summary>
     public static TournamentCreatedEvent ToCreatedEvent(TournamentRecord record, DateTimeOffset at) =>
         new(
@@ -187,6 +207,14 @@ internal static class JournalMapping
     public static TimeControl? ToTimeControl(JournalTimeControl? timeControl) =>
         timeControl is null ? null : new TimeControl(timeControl.InitialSeconds, timeControl.IncrementSeconds);
 
+    /// <summary>Rebuild the Api attestation a journaled declaration folds to.</summary>
+    public static EngineAttestation ToAttestation(RosterAttestation attestation) =>
+        new(attestation.Authors, attestation.Origin, attestation.DerivedFrom);
+
+    /// <summary>Rebuild the server credential a journaled one folds to.</summary>
+    public static EngineCredential ToCredential(RosterCredential credential) =>
+        new(credential.Scheme, credential.Salt, credential.Hash);
+
     /// <summary>The seat a journaled seat folds to (public: the audit read attributes evidence events with it).</summary>
     public static MatchSeat ToSeat(JournalSeat seat) =>
         seat == JournalSeat.One ? MatchSeat.One : MatchSeat.Two;
@@ -204,6 +232,12 @@ internal static class JournalMapping
 
     private static JournalTimeControl? ToJournal(TimeControl? timeControl) =>
         timeControl is null ? null : new JournalTimeControl(timeControl.InitialSeconds, timeControl.IncrementSeconds);
+
+    private static RosterAttestation ToJournal(EngineAttestation attestation) =>
+        new(attestation.Authors, attestation.Origin, attestation.DerivedFrom);
+
+    private static RosterCredential ToJournal(EngineCredential credential) =>
+        new(credential.Scheme, credential.Salt, credential.Hash);
 
     private static JournalDecisionKind ToJournal(DecisionKind kind) => kind switch
     {

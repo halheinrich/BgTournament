@@ -11,6 +11,15 @@ internal enum JournalKind
 
     /// <summary>A per-server-session journal segment (engine lifecycle evidence).</summary>
     Server,
+
+    /// <summary>
+    /// A roster journal segment (engine registration history). Like
+    /// <see cref="Server"/>, one segment per server session that mutates the
+    /// roster — the roster's full history is the fold of every segment, which
+    /// is what keeps this store's create-once, append-only contract intact
+    /// for a record that outlives any one boot.
+    /// </summary>
+    Roster,
 }
 
 /// <summary>

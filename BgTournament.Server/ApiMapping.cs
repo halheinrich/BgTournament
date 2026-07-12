@@ -43,6 +43,20 @@ internal static class ApiMapping
             record.StartedAtUtc,
             record.EndedAtUtc);
 
+    /// <summary>
+    /// Project a roster record onto its admin entry. Deliberately
+    /// credential-free: no hash material ever crosses the HTTP boundary.
+    /// </summary>
+    public static RosterEntry ToEntry(this RosterEngineRecord engine) =>
+        new(
+            engine.Name,
+            engine.Attestation,
+            engine.Active,
+            engine.RegisteredAtUtc,
+            engine.RegisteredBy,
+            engine.KeyRotatedAtUtc,
+            engine.DeactivatedAtUtc);
+
     /// <summary>Project a domain standings row onto its admin shape.</summary>
     public static StandingEntry ToStandingEntry(this StandingsRow row) =>
         new(row.Rank, row.Participant, row.Wins, row.Losses, row.SonnebornBerger);

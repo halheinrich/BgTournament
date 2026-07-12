@@ -63,6 +63,9 @@ BgTournament/
 │   ├── MatchStatus.cs / TournamentStatus.cs    status vocabularies (Server uses them too)
 │   ├── ErrorResponse.cs                the typed error body on every non-success response
 │   ├── AdminApiKey.cs                  the admin key header-name SSOT (X-Api-Key)
+│   ├── EngineAttestation.cs            the provenance declaration (stored as declared)
+│   ├── RegisterEngineRequest.cs / RosterEntry.cs   roster request/entry shapes (credential-free)
+│   ├── EngineKeyGrant.cs               the show-once key issuance envelope (register + rotate)
 │   ├── StartMatchRequest.cs / StartTournamentRequest.cs
 │   ├── TimeControl.cs                  validated Fischer control + its JsonException-funnel converter
 │   ├── EngineSummary.cs / MatchSummary.cs
@@ -87,7 +90,10 @@ BgTournament/
 │   ├── AdminApiKeys.cs                 the validated key set: boot-time validation, fixed-time identify
 │   ├── AdminActor.cs                   one request's authenticated identity (feature + minimal-API binding)
 │   ├── AdminAuthenticationMiddleware.cs  the whole-surface identity gate (/engine exempt)
-│   ├── EngineSocketEndpoint.cs         handshake gate; named rejections
+│   ├── EnginePolicy.cs                 who may connect on the wire: Open vs Registered
+│   ├── EngineKeyCredentials.cs         key generation + the salted-hash scheme (sha256-salted-v1)
+│   ├── RosterService.cs                the roster: fold + mutations + key resolution (one transition SSOT)
+│   ├── EngineSocketEndpoint.cs         handshake gate incl. the roster gate (§3.1); named rejections
 │   ├── EngineConnection.cs             receive loop; one in-flight query; Closed task
 │   ├── IEngineChannel.cs               query seam (EngineConnection live, faked in tests)
 │   ├── RemoteEngineAgent.cs            IPlayAgent+ICubeAgent over the channel; taxonomy
@@ -121,6 +127,8 @@ BgTournament/
 │       ├── MatchJournal.cs             the write-through IMatchObserver sibling of LiveMatch
 │       ├── TournamentJournal.cs        created / matchStarted / result / terminal
 │       ├── ServerJournal.cs            hosted per-boot segment: started/connect/disconnect/reject/stopped
+│       ├── RosterJournalEvent.cs       roster DTO union + attestation/credential journal shapes
+│       ├── RosterJournal.cs            synchronous per-boot roster segment (durable-before-answered)
 │       ├── JournalRehydrator.cs        startup fold: journals → records, before endpoints serve
 │       └── PersistenceOptions.cs       Persistence:DataDirectory (appsettings)
 ├── BgTournament.EngineClient/          .NET SDK + reference bot
@@ -165,8 +173,12 @@ BgTournament/
     ├── AuditEndpointTests.cs           /matches/{id}/audit: replay join, clock trail, fair packet,
     │                                   deterministic drain gate, damage surfaces, late-reply hook pin
     ├── ServerJournalTests.cs           segment per boot; connect/disconnect/reject/stopped evidence
-    └── AdminAuthTests.cs               the admin identity gate: accept/reject both modes, actor
-                                        stamps (direct vs scheduled), refusal evidence, boot validation
+    ├── AdminAuthTests.cs               the admin identity gate: accept/reject both modes, actor
+    │                                   stamps (direct vs scheduled), refusal evidence, boot validation
+    ├── RosterEndpointTests.cs          registration lifecycle, actor stamps, no-plaintext-on-disk,
+    │                                   cross-segment rehydration, admin-gate composition
+    └── WireEnforcementTests.cs         Open/Registered × keyless/valid/unknown/mismatch/deactivated,
+                                        rotation kills old keys, SDK round-trip, rejection evidence
 ```
 
 ## Architecture
@@ -341,7 +353,7 @@ precedent), presented per request in the `X-Api-Key` header —
 `BgTournament.Api.AdminApiKey.HeaderName` is the header SSOT, the
 `VerifiableDice` idiom one contract layer up. One rule covers the whole
 surface (`AdminAuthenticationMiddleware`; only `/engine` is exempt — its gate
-is the hello handshake, and session 3's `engineKey` rides *that*).
+is the hello handshake, and the roster's `engineKey` rides *that*, §3.1).
 Enforcement is implicit in the configuration: any key configured means every
 admin request must present a valid one; an empty section means anonymous
 service — today's dev/smoke default, announced by a startup warning so
@@ -370,6 +382,54 @@ authentication framework (no policies, schemes, or claims consumers exist to
 justify the ceremony, and the framework's challenge path fights the
 `ErrorResponse`-body contract); a second scheme or per-endpoint authorization
 is the trigger to migrate.
+
+**Registration/originality (the roster).** The engine roster is the WCCC-model
+attestation posture made durable: registration is an *administrative* act on
+the (authenticated) admin surface — an admin records the engine's name and its
+provenance declaration (`EngineAttestation`: authors, origin, derived-from,
+stored as declared; forensics stays a declared arbiter's right with no code
+behind it), and the server issues a 256-bit engine key, shown exactly once in
+the `EngineKeyGrant` response. At rest the key is a salted SHA-256 hash under
+a per-credential scheme id (`sha256-salted-v1`) — deliberately *not* a
+stretched KDF: keys are server-generated CSPRNG values, so stretching protects
+nothing and would put CPU on every hello (a handshake DoS surface); the scheme
+field is the migration path. **Roster-as-journal:** the roster's state is the
+startup fold of an append-only registration history — `JournalKind.Roster`,
+one *segment per roster-mutating boot* (the server-journal idiom; created
+lazily, so idle boots write nothing), events `registered` / `attestation` /
+`credentialRotated` / `deactivated`, each stamped with the acting admin (the
+tier-C extension). Per-boot segments — not one long-lived reopened file — keep
+`IJournalStore`'s create-once contract *and* the damage policy intact: a
+write-once file's torn tail is always a true tail, whereas reopen-and-append
+would turn one boot's torn tail into the next boot's mid-file corruption.
+Unlike the observer journals, `RosterJournal` writes synchronously and a
+failure *fails the mutation*: the credential must be durable before the
+show-once key is revealed. Runtime mutations and the startup fold apply events
+through the one `RosterService.Apply` transition path, so a rehydrated roster
+cannot differ from the live one. Deactivation is terminal (no reactivation
+event exists — a comeback is a conscious future design, not a resurrectable
+flag), and no journal byte, log line, or API response after the grant ever
+carries a plaintext key. **Wire enforcement:** hello gains an optional
+`engineKey` (additive under §2, the third use of the precedent — wire stays
+v1, and a keyless hello is byte-identical to before), and
+`Tournament:EnginePolicy` picks `Open` (default: anyone connects, the
+dev/smoke mode BgArena's in-proc boot relies on) or `Registered` (roster
+identities only). The session-1 shape repeats one gate over: a *presented* key
+is always validated whichever the policy — unknown, rotated-away, and
+deactivated keys are rejected loudly, never silently served unattributed — and
+the key resolves the roster entry whose name the hello's `engineName` must
+match (the key authenticates the name; it never renames the engine, and the
+mismatch rejection does not echo the roster name). Rejections ride the
+existing handshake funnel (`rejected` message + `handshakeRejected` server-
+journal evidence, same reason string — no new event type, `ServerSchemaVersion`
+stays 2). `Registered` with an empty roster boots with a loud warning and
+rejects everything — reachable and repairable at runtime (register, then
+connect; the bootstrap needs no restart), so it is not a startup failure; an
+unparseable policy value *is* (config binding throws). The EngineClient SDK
+takes the key as an optional constructor parameter — deliberately not on
+`EngineIdentity`, which is loggable metadata while the key is a secret.
+`wss://` termination is the transit answer (PROTOCOL.md §11 records the
+bearer-token gap and the challenge–response upgrade path).
 
 **Replay shape.** `GET /matches/{matchId}/games` projects a Completed match's
 retained transcripts onto the replay contract (`ReplayProjection`). The
@@ -545,6 +605,11 @@ public abstract record ReplyMessage : ProtocolMessage  { public required string 
 //   MatchStartedMessage.TimeControl?                       (WireTimeControl, announced up front)
 //   QueryMessage.YourTimeRemainingSeconds?, .OpponentTimeRemainingSeconds?
 //                                                          (both pools, as of query issuance)
+// Registration additive field (registered engines only; omitted for a hello
+// byte-identical to the pre-registration wire):
+//   HelloMessage.EngineKey?                                (show-once roster key; §3.1 — always
+//                                                          validated when presented, required
+//                                                          only under the Registered policy)
 public sealed record WireTimeControl { public required double InitialSeconds; public required double IncrementSeconds; }
 public static class VerifiableDice          // fair-dice wire SSOT
 {
@@ -636,6 +701,16 @@ public sealed class Tournament
 // string enums pinned per member — consumers deserialize with Web defaults.
 public sealed record ErrorResponse(string Error);          // the body of every non-success response
 public static class AdminApiKey { public const string HeaderName = "X-Api-Key"; }  // admin key header SSOT
+
+// Roster (registration/originality) — the provenance declaration is stored as
+// declared; entries are credential-free (no hash material crosses HTTP), and
+// the issued key appears exactly once, in the grant:
+public sealed record EngineAttestation(IReadOnlyList<string> Authors, string Origin, string? DerivedFrom = null);
+public sealed record RegisterEngineRequest(string Name, EngineAttestation Attestation);
+public sealed record RosterEntry(string Name, EngineAttestation Attestation, bool Active,
+    DateTimeOffset RegisteredAtUtc, string? RegisteredBy,
+    DateTimeOffset? KeyRotatedAtUtc, DateTimeOffset? DeactivatedAtUtc);
+public sealed record EngineKeyGrant(RosterEntry Entry, string EngineKey);   // show-once
 public sealed record StartMatchRequest(...);               // POST /matches (optional TimeControl)
 public sealed record StartTournamentRequest(...);          // POST /tournaments (optional TimeControl)
 public sealed record TimeControl                            // validated Fischer control; null = flat regime
@@ -737,14 +812,24 @@ public sealed record AuditTerminalEvent(..., MatchStatus Status,            // "
 //   GET  /tournaments                      every tournament record, creation order
 //   GET  /tournaments/{tournamentId}       status, standings, winner, per-match ledger (ids
 //                                          resolve on GET /matches/{matchId})
+//   GET  /roster                           every roster entry, registration order
+//   GET  /roster/{name}                    one entry (404 unknown)
+//   POST /roster                           RegisterEngineRequest → EngineKeyGrant (show-once key;
+//                                          409 duplicate name — roster names are unique forever)
+//   POST /roster/{name}/attestation        re-declare provenance (body: EngineAttestation)
+//   POST /roster/{name}/rotate             → EngineKeyGrant (fresh key; the old one dies now)
+//   POST /roster/{name}/deactivate         terminal: key stops authenticating (409 if already)
 // Every admin endpoint above sits behind the API-key gate (X-Api-Key header)
 // when Admin:ApiKeys is non-empty; refusals are 401 + ErrorResponse. /engine
 // is not gated by it (the handshake is its gate).
 // Config: Tournament:DecisionTimeoutSeconds (default 30; flat regime only — a
 // timeControl replaces it), Tournament:HandshakeTimeoutSeconds (10),
+// Tournament:EnginePolicy ("Open" default | "Registered" = roster identities
+// with valid engineKeys only; a typo fails the boot, never silently opens),
 // Persistence:DataDirectory (default "data" under the content root; the durable
-// journals live in matches/, tournaments/, and server/ beneath it, and fair-mode
-// dice keys are escrowed there — the directory shares the server's trust domain),
+// journals live in matches/, tournaments/, server/, and roster/ beneath it, and
+// fair-mode dice keys are escrowed there — the directory shares the server's
+// trust domain),
 // Admin:ApiKeys (named admin API keys, actor name → key value, plaintext — the
 // same trust domain; empty/absent = anonymous admin service, any key = required).
 ```
@@ -969,7 +1054,53 @@ public sealed record AuditTerminalEvent(..., MatchStatus Status,            // "
   requests that never happened — and duplicate one recorded decision.
 - **Never journal (or log) a presented key value.** Refusal evidence records
   the reason, method, and path only — a mistyped *real* secret must not land
-  in a durable file, and the actor stamp is always the key's name.
+  in a durable file, and the actor stamp is always the key's name. The same
+  rule covers engine keys: the roster journal holds salted hashes only, wire
+  rejections never echo the presented key, and the plaintext exists exactly
+  once, in the `EngineKeyGrant` response.
+- **Roster segments are write-once — never add reopen-and-append.** The
+  roster outlives boots, but the damage policy (tail-lenient, prefix-strict)
+  assumes write-once files: reopening a segment whose last boot died
+  mid-append would put new events *after* a torn line, which the reader
+  correctly treats as mid-file corruption and refuses to trust — the roster
+  would silently lose everything appended after the tear. One segment per
+  mutating boot keeps every file's torn tail a true tail and keeps
+  `IJournalStore` create-once. The fold across segments is ordered by segment
+  header time (ordinal-id tiebreak), and roster events carry whole state, so
+  a corrupt segment's dropped suffix leaves stale-but-honest entries the
+  admin repairs by rotation — never a poisoned roster.
+- **`RosterJournal` is synchronous and throwing on purpose.** The
+  channel-and-pump `JournalWriter` discipline (never block, never throw,
+  drop on failure) exists for observer callbacks on the match loop; roster
+  mutations are admin-paced and their durability is load-bearing — the
+  show-once key must be on disk (as a hash) *before* the response reveals
+  it. Don't "fix" the roster onto `JournalWriter`: a dropped registration
+  event with an issued key is an engine that can never authenticate.
+- **Runtime mutations and the startup fold share `RosterService.Apply`.** The
+  event transitions live once; a mutation journals its event and then applies
+  it through the same path rehydration uses, which is what guarantees a
+  restart cannot re-fold a different roster. Don't mutate entry state
+  anywhere but `Apply`.
+- **The credential scheme is deliberately unstretched.** Engine keys are
+  256-bit CSPRNG values, so salted SHA-256 is the right cost: PBKDF2/Argon2
+  stretching protects low-entropy passwords (which cannot exist here) and
+  would hang CPU on every hello — a handshake DoS surface. The per-credential
+  `scheme` field is the conscious migration path; a new scheme is new data,
+  not a format break.
+- **A presented `engineKey` is always validated — both policies.** Open mode
+  only means a *keyless* hello is admitted; an unknown, rotated-away, or
+  deactivated key rejects loudly even on an Open server (the session-1
+  admin-key shape, one gate over). And the key authenticates the claimed
+  name — a valid key with a mismatched `engineName` is rejected (without
+  echoing the roster name), never silently renamed: silent adoption would
+  fork the engine's own logs from the server's record, an attribution
+  nightmare in arbitration.
+- **`Registered` + empty roster is a warned boot, not a failed one.** The
+  bootstrap is boot-enforcing → register over the admin surface → engines
+  connect, no restart; failing the boot would break it. The loud startup
+  warning is the misconfiguration signal. An *unparseable* policy value does
+  fail the boot (config binding throws) — a typo must never silently open
+  the wire.
 
 ## Subproject-internal next steps
 
@@ -1003,6 +1134,16 @@ public sealed record AuditTerminalEvent(..., MatchStatus Status,            // "
 - **Tournament rejoin policy** — v1 binds the sessions present at start;
   re-resolving a participant by name at each scheduled match (so a
   reconnected engine plays on) is a candidate once real remote engines flake.
+  Its prerequisite — a durable name-keyed engine identity — now exists (the
+  roster); the policy itself stays deferred until its booked trigger fires.
+- **Roster history read surface** — registration history is arbitration
+  evidence on disk (the roster segments), read by humans today. A
+  `GET /roster/{name}/history` projection (the match-audit idiom, one kind
+  over) is the natural read surface once BgArena grows a registration view.
+- **Roster reactivation** — deliberately absent: deactivation is terminal,
+  and no event type can resurrect an entry. If a deactivated engine ever
+  needs a comeback, design it consciously (fresh key? re-attestation? same
+  name?) rather than adding a flag-flip event.
 - **Journal retention policy** — journals accumulate forever (one small file
   per match/tournament, plus one server-journal segment per boot; the
   per-boot segmentation is the growth answer at file level, total growth
@@ -1012,6 +1153,10 @@ public sealed record AuditTerminalEvent(..., MatchStatus Status,            // "
   timestamp). Note the segment now also accrues one `adminRejected` line per
   refused admin request — a misconfigured poller could write them steadily;
   a rate cap on refusal evidence joins this item's scope if that ever bites.
+  The roster adds one segment per *mutating* boot (created lazily — idle
+  boots write nothing), so its growth is admin-action-paced and negligible;
+  roster segments are the one kind that must **never** be pruned casually —
+  the roster's state is their fold, so deleting one rewrites history.
 - **Disconnect-during-`matchStarted` forfeit gap** — an engine that vanishes
   in the narrow window while `matchStarted` is being sent can surface as a
   Faulted match rather than a Forfeited one (seen once as test flake; the

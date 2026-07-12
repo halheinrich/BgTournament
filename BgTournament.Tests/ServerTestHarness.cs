@@ -346,12 +346,18 @@ internal sealed class TestEngine : IAsyncDisposable
         WebApplicationFactory<Program> factory,
         string name,
         int protocolVersion = WireProtocol.Version,
-        bool expectWelcome = true)
+        bool expectWelcome = true,
+        string? engineKey = null)
     {
         var socket = await factory.Server.CreateWebSocketClient()
             .ConnectAsync(new Uri("ws://localhost/engine"), CancellationToken.None);
         var engine = new TestEngine(socket, name);
-        await engine.SendAsync(new HelloMessage { ProtocolVersion = protocolVersion, EngineName = name });
+        await engine.SendAsync(new HelloMessage
+        {
+            ProtocolVersion = protocolVersion,
+            EngineName = name,
+            EngineKey = engineKey,
+        });
         if (expectWelcome)
         {
             await engine.ExpectAsync<WelcomeMessage>();
