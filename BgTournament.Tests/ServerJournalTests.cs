@@ -5,7 +5,7 @@ namespace BgTournament.Tests;
 
 /// <summary>
 /// The server-session journal end to end: one segment per boot under
-/// <c>server/</c>, headed by <c>started</c> (schema 1) and closed by the
+/// <c>server/</c>, headed by <c>started</c> (version-stamped) and closed by the
 /// graceful <c>stopped</c> marker; engine registrations, disconnects, and
 /// handshake rejections journaled with the same names and reasons the wire
 /// carries. Evidence-only by design — a second boot opens a second segment

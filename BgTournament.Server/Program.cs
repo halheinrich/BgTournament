@@ -8,6 +8,12 @@ var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.Configure<TournamentOptions>(builder.Configuration.GetSection("Tournament"));
 builder.Services.Configure<PersistenceOptions>(builder.Configuration.GetSection("Persistence"));
+builder.Services.Configure<AdminOptions>(builder.Configuration.GetSection("Admin"));
+
+// The admin surface's identity: named API keys, validated once at startup —
+// a broken key configuration (blank name/key, shared key value) fails the
+// boot loudly rather than serving with an ambiguous or silent identity story.
+builder.Services.AddSingleton<AdminApiKeys>();
 
 // The one timestamp source for clock logic and journal timestamps (never
 // ambient DateTime/Stopwatch), so both are deterministic under test.
@@ -34,6 +40,13 @@ await app.Services.GetRequiredService<JournalRehydrator>().RehydrateAsync();
 
 app.UseWebSockets();
 
+// The admin identity gate — one rule for the whole admin surface (every HTTP
+// endpoint except the engine wire, whose gate is the hello handshake): keys
+// configured ⇒ a valid X-Api-Key header is required and the resolved actor
+// rides the request; none configured ⇒ anonymous, but a presented key is
+// still validated so a client/server key mismatch fails loudly.
+app.UseMiddleware<AdminAuthenticationMiddleware>();
+
 // The engine wire endpoint (PROTOCOL.md).
 app.Map("/engine", EngineSocketEndpoint.HandleAsync);
 
@@ -43,11 +56,11 @@ app.Map("/engine", EngineSocketEndpoint.HandleAsync);
 app.MapGet("/engines", (EngineRegistry registry) =>
     Results.Ok(registry.Snapshot().Select(ApiMapping.ToSummary)));
 
-app.MapPost("/matches", (StartMatchRequest request, MatchService matches) =>
+app.MapPost("/matches", (StartMatchRequest request, AdminActor? actor, MatchService matches) =>
 {
     var (record, error, detail) = matches.StartMatch(
         request.EngineOne, request.EngineTwo, request.MatchLength, request.Seed, request.MaxGames,
-        request.TimeControl);
+        request.TimeControl, actor?.Name);
     return error switch
     {
         StartMatchError.None => Results.Ok(record!.ToSummary()),
@@ -165,11 +178,11 @@ app.MapGet("/matches/{matchId}/live", IResult (string matchId, MatchService matc
 
 // Round-robin tournaments: server-side orchestration over the same match
 // host — invisible on the wire (engines just see per-match lifecycles).
-app.MapPost("/tournaments", (StartTournamentRequest request, TournamentService tournaments) =>
+app.MapPost("/tournaments", (StartTournamentRequest request, AdminActor? actor, TournamentService tournaments) =>
 {
     var (record, error, detail) = tournaments.StartTournament(
         request.Participants, request.MatchLength, request.MatchesPerPairing, request.Seed,
-        request.TimeControl);
+        request.TimeControl, actor?.Name);
     return error switch
     {
         StartTournamentError.None => Results.Ok(tournaments.Summarize(record!)),

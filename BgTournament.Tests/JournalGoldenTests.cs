@@ -46,14 +46,18 @@ public class JournalGoldenTests
     /// <summary>
     /// The version constants are format facts, pinned like bytes: v2 added the
     /// match-journal arbitration evidence; v1 files must keep folding; the
-    /// server journal versions independently, from 1.
+    /// server journal versions independently — its v2 added the admin-refusal
+    /// evidence. The <c>createdBy</c> actor stamp on the created headers is
+    /// deliberately <em>not</em> a bump: it is an optional field whose absence
+    /// means exactly what it meant before the field existed (no authenticated
+    /// actor), so old files stay truthful under the same version.
     /// </summary>
     [Fact]
     public void SchemaVersions_Pinned()
     {
         Assert.Equal(2, JournalCodec.SchemaVersion);
         Assert.Equal(1, JournalCodec.MinSchemaVersion);
-        Assert.Equal(1, JournalCodec.ServerSchemaVersion);
+        Assert.Equal(2, JournalCodec.ServerSchemaVersion);
         Assert.True(JournalCodec.IsSupported(1));
         Assert.True(JournalCodec.IsSupported(2));
         Assert.False(JournalCodec.IsSupported(0));
@@ -68,16 +72,21 @@ public class JournalGoldenTests
                 Seed: 42,
                 DiceAlgorithm: "hmac-sha256-dice-v1",
                 DiceKey: "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
-                TimeControl: new JournalTimeControl(120, 8)),
-            $$$"""{"type":"created","schemaVersion":2,"at":"{{{AtWire}}}","matchId":"match-1","engineOne":"Alpha","engineTwo":"Beta","matchLength":7,"maxGames":50,"seed":42,"diceAlgorithm":"hmac-sha256-dice-v1","diceKey":"00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff","timeControl":{"initialSeconds":120,"incrementSeconds":8}}""");
+                TimeControl: new JournalTimeControl(120, 8),
+                CreatedBy: "director"),
+            $$$"""{"type":"created","schemaVersion":2,"at":"{{{AtWire}}}","matchId":"match-1","engineOne":"Alpha","engineTwo":"Beta","matchLength":7,"maxGames":50,"seed":42,"diceAlgorithm":"hmac-sha256-dice-v1","diceKey":"00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff","timeControl":{"initialSeconds":120,"incrementSeconds":8},"createdBy":"director"}""");
 
-    /// <summary>Explicit-seed, flat-regime header: every optional field is omitted, not null.</summary>
+    /// <summary>
+    /// Explicit-seed, flat-regime, anonymous header: every optional field is
+    /// omitted, not null — which also proves an actor-less header is
+    /// byte-identical to every file written before the actor stamp existed.
+    /// </summary>
     [Fact]
     public void MatchCreated_SeededFlat_OmitsAbsentFields() =>
         AssertGolden(
             new MatchCreatedEvent(
                 At, JournalCodec.SchemaVersion, "match-1", "Alpha", "Beta", MatchLength: 1, MaxGames: null,
-                Seed: 7, DiceAlgorithm: null, DiceKey: null, TimeControl: null),
+                Seed: 7, DiceAlgorithm: null, DiceKey: null, TimeControl: null, CreatedBy: null),
             $$"""{"type":"created","schemaVersion":2,"at":"{{AtWire}}","matchId":"match-1","engineOne":"Alpha","engineTwo":"Beta","matchLength":1,"seed":7}""");
 
     [Fact]
@@ -232,15 +241,17 @@ public class JournalGoldenTests
             new TournamentCreatedEvent(
                 At, JournalCodec.SchemaVersion, "tournament-1", ["Alpha", "Beta", "Gamma"], MatchLength: 3,
                 MatchesPerPairing: 2, Seed: 99, FairDice: true,
-                TimeControl: new JournalTimeControl(60, 5)),
-            $$$"""{"type":"created","schemaVersion":2,"at":"{{{AtWire}}}","tournamentId":"tournament-1","participants":["Alpha","Beta","Gamma"],"matchLength":3,"matchesPerPairing":2,"seed":99,"fairDice":true,"timeControl":{"initialSeconds":60,"incrementSeconds":5}}""");
+                TimeControl: new JournalTimeControl(60, 5),
+                CreatedBy: "director"),
+            $$$"""{"type":"created","schemaVersion":2,"at":"{{{AtWire}}}","tournamentId":"tournament-1","participants":["Alpha","Beta","Gamma"],"matchLength":3,"matchesPerPairing":2,"seed":99,"fairDice":true,"timeControl":{"initialSeconds":60,"incrementSeconds":5},"createdBy":"director"}""");
 
+    /// <summary>An anonymous, seeded, flat-regime header omits every optional field — byte-identical to the pre-actor format.</summary>
     [Fact]
     public void TournamentCreated_SeededFlat_OmitsTimeControl() =>
         AssertGolden(
             new TournamentCreatedEvent(
                 At, JournalCodec.SchemaVersion, "tournament-1", ["Alpha", "Beta"], MatchLength: 1,
-                MatchesPerPairing: 1, Seed: 7, FairDice: false, TimeControl: null),
+                MatchesPerPairing: 1, Seed: 7, FairDice: false, TimeControl: null, CreatedBy: null),
             $$"""{"type":"created","schemaVersion":2,"at":"{{AtWire}}","tournamentId":"tournament-1","participants":["Alpha","Beta"],"matchLength":1,"matchesPerPairing":1,"seed":7,"fairDice":false}""");
 
     [Fact]
@@ -277,7 +288,7 @@ public class JournalGoldenTests
     public void ServerStarted_Golden() =>
         AssertGolden(
             new ServerStartedEvent(At, JournalCodec.ServerSchemaVersion),
-            $$"""{"type":"started","schemaVersion":1,"at":"{{AtWire}}"}""");
+            $$"""{"type":"started","schemaVersion":2,"at":"{{AtWire}}"}""");
 
     [Fact]
     public void EngineConnected_Golden() =>
@@ -313,6 +324,18 @@ public class JournalGoldenTests
             new HandshakeRejectedEvent(
                 At, Reason: "No hello within the handshake timeout (10 s).", EngineName: null),
             $$"""{"type":"handshakeRejected","at":"{{AtWire}}","reason":"No hello within the handshake timeout (10 s)."}""");
+
+    /// <summary>
+    /// An admin-surface refusal (server schema v2) — the reason is the exact
+    /// response body string; the presented key value is never recorded.
+    /// </summary>
+    [Fact]
+    public void AdminRejected_Golden() =>
+        AssertGolden(
+            new AdminRejectedEvent(
+                At, Reason: "The presented admin API key is not recognized.",
+                Method: "POST", Path: "/matches"),
+            $$"""{"type":"adminRejected","at":"{{AtWire}}","reason":"The presented admin API key is not recognized.","method":"POST","path":"/matches"}""");
 
     [Fact]
     public void ServerStopped_Golden() =>

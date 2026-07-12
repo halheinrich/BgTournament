@@ -4,9 +4,10 @@ using Microsoft.Extensions.Logging;
 namespace BgTournament.Server.Persistence;
 
 /// <summary>
-/// The server-session journal: the durable record of engine lifecycle at the
-/// server level (connects, disconnects, handshake rejections), one segment
-/// file per process run under <c>server/</c> in the journal store.
+/// The server-session journal: the durable record of server-level gate
+/// evidence (engine connects, disconnects, handshake rejections, and admin
+/// refusals), one segment file per process run under <c>server/</c> in the
+/// journal store.
 ///
 /// <para>Registered once as a singleton and as the hosted service that opens
 /// the segment: <see cref="StartAsync"/> runs before Kestrel accepts
@@ -73,6 +74,14 @@ internal sealed class ServerJournal : IHostedService
     /// </summary>
     public void RecordHandshakeRejected(string reason, string? engineName) =>
         Append(() => JournalMapping.ToRejectedEvent(reason, engineName, _time.GetUtcNow()));
+
+    /// <summary>
+    /// Journal an admin-surface refusal — the same reason string the refused
+    /// response's <c>ErrorResponse</c> body carries (the handshake-rejection
+    /// funnel, one gate over). Never the presented key value.
+    /// </summary>
+    public void RecordAdminRejected(string reason, string method, string path) =>
+        Append(() => JournalMapping.ToAdminRejectedEvent(reason, method, path, _time.GetUtcNow()));
 
     /// <summary>
     /// Map-and-enqueue with the journal containment: a mapping bug is logged

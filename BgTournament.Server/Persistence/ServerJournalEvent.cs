@@ -4,10 +4,13 @@ namespace BgTournament.Server.Persistence;
 
 /// <summary>
 /// Base type for every event in a server journal — the durable record of
-/// engine lifecycle at the server level: connects, disconnects, and handshake
-/// rejections (<c>EngineRegistry</c> itself is deliberately ephemeral). One
-/// JSON object per JSONL line, <c>"type"</c>-discriminated; serialize and
-/// deserialize exclusively through <see cref="JournalCodec"/>.
+/// server-level gate evidence: engine connects, disconnects, and handshake
+/// rejections (<c>EngineRegistry</c> itself is deliberately ephemeral), plus
+/// the admin surface's refusals (schema v2 — accepted admin actions are not
+/// recorded here; their actor stamps the match/tournament <c>created</c>
+/// header instead, the one durable home per action). One JSON object per
+/// JSONL line, <c>"type"</c>-discriminated; serialize and deserialize
+/// exclusively through <see cref="JournalCodec"/>.
 ///
 /// <para><b>One segment per server session.</b> Unlike a match journal, this
 /// record has no natural end — so each process start opens a fresh segment
@@ -27,6 +30,7 @@ namespace BgTournament.Server.Persistence;
 [JsonDerivedType(typeof(EngineConnectedEvent), "engineConnected")]
 [JsonDerivedType(typeof(EngineDisconnectedEvent), "engineDisconnected")]
 [JsonDerivedType(typeof(HandshakeRejectedEvent), "handshakeRejected")]
+[JsonDerivedType(typeof(AdminRejectedEvent), "adminRejected")]
 [JsonDerivedType(typeof(ServerStoppedEvent), "stopped")]
 internal abstract record ServerJournalEvent([property: JsonPropertyOrder(-1)] DateTimeOffset At);
 
@@ -71,6 +75,23 @@ internal sealed record HandshakeRejectedEvent(
     DateTimeOffset At,
     string Reason,
     string? EngineName) : ServerJournalEvent(At);
+
+/// <summary>
+/// An admin HTTP request was refused at the identity gate (schema v2) — the
+/// admin counterpart of <see cref="HandshakeRejectedEvent"/>, with the same
+/// one-funnel rule: the reason is the exact string the refused response
+/// carried. The presented key value is deliberately never recorded — a
+/// mistyped real secret must not land in a durable file.
+/// </summary>
+/// <param name="At">Event time (UTC).</param>
+/// <param name="Reason">The exact reason sent in the response's <c>ErrorResponse</c> body.</param>
+/// <param name="Method">The refused request's HTTP method.</param>
+/// <param name="Path">The refused request's path — what was being attempted.</param>
+internal sealed record AdminRejectedEvent(
+    DateTimeOffset At,
+    string Reason,
+    string Method,
+    string Path) : ServerJournalEvent(At);
 
 /// <summary>
 /// The server session ended gracefully — always the segment's last event when

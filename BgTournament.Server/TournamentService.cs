@@ -33,7 +33,8 @@ internal sealed class TournamentRecord
 {
     public TournamentRecord(
         string tournamentId, Tournament tournament, long sequence, bool fairDice,
-        TimeControl? timeControl, DateTimeOffset startedAtUtc, TournamentJournal? journal)
+        TimeControl? timeControl, DateTimeOffset startedAtUtc, TournamentJournal? journal,
+        string? createdBy)
     {
         TournamentId = tournamentId;
         Tournament = tournament;
@@ -42,6 +43,7 @@ internal sealed class TournamentRecord
         TimeControl = timeControl;
         StartedAtUtc = startedAtUtc;
         Journal = journal;
+        CreatedBy = createdBy;
         MatchIds = new string?[tournament.Schedule.Count];
     }
 
@@ -65,6 +67,17 @@ internal sealed class TournamentRecord
     /// whose journal is already complete on disk.
     /// </summary>
     public TournamentJournal? Journal { get; }
+
+    /// <summary>
+    /// The authenticated admin actor (API-key name) whose request created this
+    /// tournament — journaled on the <c>created</c> header, the tier-C
+    /// admin-action stamp. Null for an anonymous creation (admin surface
+    /// serving openly). Server-internal; deliberately not projected onto the
+    /// admin summary shapes. Scheduled matches carry no actor of their own —
+    /// this record is their accountability, reachable through the tournament
+    /// journal's <c>matchStarted</c> linkage.
+    /// </summary>
+    public string? CreatedBy { get; }
 
     /// <summary>
     /// Whether the tournament's matches run on fair-mode (committed, verifiable)
@@ -167,7 +180,7 @@ internal sealed class TournamentService
     /// </summary>
     public (TournamentRecord? Record, StartTournamentError Error, string? ErrorDetail) StartTournament(
         IReadOnlyList<string>? participants, int matchLength, int matchesPerPairing, int? seed,
-        TimeControl? timeControl = null)
+        TimeControl? timeControl = null, string? createdBy = null)
     {
         // The domain library is the single home of participant and format
         // validation; its rejections map to InvalidConfiguration verbatim.
@@ -221,7 +234,7 @@ internal sealed class TournamentService
         var record = new TournamentRecord(
             tournamentId, tournament, Interlocked.Increment(ref _sequenceSource),
             fairDice: seed is null, timeControl, _time.GetUtcNow(),
-            TournamentJournal.Create(_store, tournamentId, _time, _logger));
+            TournamentJournal.Create(_store, tournamentId, _time, _logger), createdBy);
 
         // The journal header is the record's durable identity — written first,
         // before anything can happen to the tournament.

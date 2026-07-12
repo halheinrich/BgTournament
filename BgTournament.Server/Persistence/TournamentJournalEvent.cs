@@ -33,6 +33,13 @@ internal abstract record TournamentJournalEvent([property: JsonPropertyOrder(-1)
 /// <param name="Seed">The tournament seed — schedule structure in every mode, dice only in explicit-seed mode.</param>
 /// <param name="FairDice">Whether the tournament's matches run on fair-mode (committed, verifiable) dice.</param>
 /// <param name="TimeControl">The Fischer time control every scheduled match runs under, or null for the flat regime.</param>
+/// <param name="CreatedBy">
+/// The authenticated admin actor (API-key name) whose request created the
+/// tournament — the tier-C admin-action stamp. Null when the request was
+/// anonymous (admin surface serving openly) or the file predates actor
+/// identity — both honestly "no authenticated actor", which is why this field
+/// is additive under the existing schema version rather than a bump.
+/// </param>
 internal sealed record TournamentCreatedEvent(
     DateTimeOffset At,
     [property: JsonPropertyOrder(-2)] int SchemaVersion,
@@ -42,7 +49,8 @@ internal sealed record TournamentCreatedEvent(
     int MatchesPerPairing,
     int Seed,
     bool FairDice,
-    JournalTimeControl? TimeControl) : TournamentJournalEvent(At);
+    JournalTimeControl? TimeControl,
+    string? CreatedBy) : TournamentJournalEvent(At);
 
 /// <summary>
 /// A scheduled match was created and (unless forfeited without play) is about

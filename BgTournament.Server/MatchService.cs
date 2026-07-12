@@ -58,6 +58,17 @@ internal sealed class MatchRecord
     public TimeControl? TimeControl { get; init; }
 
     /// <summary>
+    /// The authenticated admin actor (API-key name) whose request created this
+    /// match — journaled on the <c>created</c> header, the tier-C admin-action
+    /// stamp. Null when there was no direct authenticated request: an
+    /// anonymous creation (admin surface serving openly) or a
+    /// tournament-scheduled match (accountability lives on the tournament's
+    /// own record). Server-internal; deliberately not projected onto the admin
+    /// summary shapes.
+    /// </summary>
+    public string? CreatedBy { get; init; }
+
+    /// <summary>
     /// Monotonic creation order, for stable listings — a concurrent
     /// dictionary has none of its own. Server-internal; never serialized.
     /// Rehydrated records are re-sequenced by journal creation time, so the
@@ -242,7 +253,7 @@ internal sealed class MatchService
     /// </summary>
     public (MatchRecord? Record, StartMatchError Error, string? ErrorDetail) StartMatch(
         string engineOne, string engineTwo, int matchLength, int? seed, int? maxGames,
-        TimeControl? timeControl = null)
+        TimeControl? timeControl = null, string? createdBy = null)
     {
         if (matchLength < 0)
         {
@@ -292,7 +303,7 @@ internal sealed class MatchService
         DiceKey? diceKey = seed is null ? DiceKey.Generate() : null;
         var record = CreateHostedMatch(
             sessionOne.Name, sessionTwo.Name, matchLength, seed ?? Random.Shared.Next(), maxGames, diceKey,
-            timeControl);
+            timeControl, createdBy);
 
         _ = Task.Run(
             async () =>
@@ -317,11 +328,13 @@ internal sealed class MatchService
     /// to run the match on committed, verifiable fair-mode dice; omit it for the
     /// explicit-seed <see cref="SeededDiceSource"/>. Pass
     /// <paramref name="timeControl"/> to run the match on Fischer clocks; omit
-    /// it for the flat per-decision timeout.
+    /// it for the flat per-decision timeout. Pass <paramref name="createdBy"/>
+    /// only for a directly requested match — a tournament-scheduled one carries
+    /// no actor of its own.
     /// </summary>
     public MatchRecord CreateHostedMatch(
         string engineOne, string engineTwo, int matchLength, int seed, int? maxGames = null,
-        DiceKey? diceKey = null, TimeControl? timeControl = null)
+        DiceKey? diceKey = null, TimeControl? timeControl = null, string? createdBy = null)
     {
         var matchId = Guid.NewGuid().ToString("N");
         var record = new MatchRecord
@@ -334,6 +347,7 @@ internal sealed class MatchService
             Seed = seed,
             DiceKey = diceKey,
             TimeControl = timeControl,
+            CreatedBy = createdBy,
             Sequence = Interlocked.Increment(ref _sequenceSource),
             StartedAtUtc = _time.GetUtcNow(),
             Live = new LiveMatch(matchId, _logger),

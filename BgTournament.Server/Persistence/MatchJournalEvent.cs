@@ -49,6 +49,16 @@ internal abstract record MatchJournalEvent([property: JsonPropertyOrder(-1)] Dat
 /// no-drift rule. Null for explicit-seed matches.
 /// </param>
 /// <param name="TimeControl">The Fischer time control, or null for the flat regime.</param>
+/// <param name="CreatedBy">
+/// The authenticated admin actor (API-key name) whose request created the
+/// match — the tier-C admin-action stamp. Null when there was no direct
+/// authenticated request: an anonymous creation (admin surface serving
+/// openly), a tournament-scheduled match (the tournament's own header carries
+/// its actor; the tournament journal's <c>matchStarted</c> linkage is the
+/// chain of custody), or any file written before actor identity existed —
+/// all honestly "no authenticated actor", which is why this field is additive
+/// under the existing schema version rather than a bump.
+/// </param>
 internal sealed record MatchCreatedEvent(
     DateTimeOffset At,
     [property: JsonPropertyOrder(-2)] int SchemaVersion,
@@ -60,7 +70,8 @@ internal sealed record MatchCreatedEvent(
     int Seed,
     string? DiceAlgorithm,
     string? DiceKey,
-    JournalTimeControl? TimeControl) : MatchJournalEvent(At);
+    JournalTimeControl? TimeControl,
+    string? CreatedBy) : MatchJournalEvent(At);
 
 /// <summary>
 /// The wire lifecycle began: the server is about to send <c>matchStarted</c>

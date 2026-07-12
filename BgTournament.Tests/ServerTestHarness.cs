@@ -26,7 +26,7 @@ internal static class ServerHarness
 
     public static WebApplicationFactory<Program> NewFactory(
         double? decisionTimeoutSeconds = null, TimeProvider? timeProvider = null,
-        string? dataDirectory = null) =>
+        string? dataDirectory = null, IReadOnlyDictionary<string, string>? settings = null) =>
         new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
         {
             // Every factory journals into an isolated directory in the system
@@ -41,6 +41,12 @@ internal static class ServerHarness
             {
                 builder.UseSetting(
                     "Tournament:DecisionTimeoutSeconds", seconds.ToString(CultureInfo.InvariantCulture));
+            }
+
+            // Arbitrary extra configuration (e.g. Admin:ApiKeys:<name> entries).
+            foreach (var (key, value) in settings ?? new Dictionary<string, string>())
+            {
+                builder.UseSetting(key, value);
             }
 
             if (timeProvider is not null)

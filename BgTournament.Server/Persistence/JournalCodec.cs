@@ -45,9 +45,11 @@ internal static class JournalCodec
     /// <summary>
     /// The server-journal schema version — versioned independently of the
     /// match/tournament format: the kinds are separate durable formats and
-    /// evolve on their own clocks.
+    /// evolve on their own clocks. Version 2 added the admin-surface refusal
+    /// evidence (<see cref="AdminRejectedEvent"/>) — a new event type, so a
+    /// bump per the same strict-codec rule as the match journal's v2.
     /// </summary>
-    public const int ServerSchemaVersion = 1;
+    public const int ServerSchemaVersion = 2;
 
     /// <summary>Whether this server can fold a match/tournament journal stamped <paramref name="schemaVersion"/>.</summary>
     public static bool IsSupported(int schemaVersion) =>

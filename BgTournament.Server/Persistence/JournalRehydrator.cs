@@ -199,6 +199,7 @@ internal sealed class JournalRehydrator
             Seed = header.Seed,
             DiceKey = header.DiceKey is null ? null : DiceKey.FromHex(header.DiceKey),
             TimeControl = JournalMapping.ToTimeControl(header.TimeControl),
+            CreatedBy = header.CreatedBy,
             Sequence = sequence,
             StartedAtUtc = header.At,
             Live = live,
@@ -318,7 +319,7 @@ internal sealed class JournalRehydrator
         var record = new TournamentRecord(
             header.TournamentId, tournament, sequence, header.FairDice,
             JournalMapping.ToTimeControl(header.TimeControl), header.At,
-            journal: null);
+            journal: null, header.CreatedBy);
 
         TournamentTerminalEvent? terminal = null;
         foreach (var journalEvent in events.Skip(1))

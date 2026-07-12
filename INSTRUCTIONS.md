@@ -62,6 +62,7 @@ BgTournament/
 ├── BgTournament.Api/                   admin HTTP contracts (zero dependencies, public)
 │   ├── MatchStatus.cs / TournamentStatus.cs    status vocabularies (Server uses them too)
 │   ├── ErrorResponse.cs                the typed error body on every non-success response
+│   ├── AdminApiKey.cs                  the admin key header-name SSOT (X-Api-Key)
 │   ├── StartMatchRequest.cs / StartTournamentRequest.cs
 │   ├── TimeControl.cs                  validated Fischer control + its JsonException-funnel converter
 │   ├── EngineSummary.cs / MatchSummary.cs
@@ -82,6 +83,10 @@ BgTournament/
 │   └── Tournament.cs                   the aggregate: schedule, results, tie-break ladder
 ├── BgTournament.Server/                the tournament host (all types internal)
 │   ├── Program.cs                      /engine (WS) + the admin HTTP endpoints; rehydrate-before-serve
+│   ├── AdminOptions.cs                 Admin:ApiKeys binding (named keys; empty = anonymous service)
+│   ├── AdminApiKeys.cs                 the validated key set: boot-time validation, fixed-time identify
+│   ├── AdminActor.cs                   one request's authenticated identity (feature + minimal-API binding)
+│   ├── AdminAuthenticationMiddleware.cs  the whole-surface identity gate (/engine exempt)
 │   ├── EngineSocketEndpoint.cs         handshake gate; named rejections
 │   ├── EngineConnection.cs             receive loop; one in-flight query; Closed task
 │   ├── IEngineChannel.cs               query seam (EngineConnection live, faked in tests)
@@ -159,7 +164,9 @@ BgTournament/
     │                                   v1 tolerance, evidence-ignored fold, unknown-version skip
     ├── AuditEndpointTests.cs           /matches/{id}/audit: replay join, clock trail, fair packet,
     │                                   deterministic drain gate, damage surfaces, late-reply hook pin
-    └── ServerJournalTests.cs           segment per boot; connect/disconnect/reject/stopped evidence
+    ├── ServerJournalTests.cs           segment per boot; connect/disconnect/reject/stopped evidence
+    └── AdminAuthTests.cs               the admin identity gate: accept/reject both modes, actor
+                                        stamps (direct vs scheduled), refusal evidence, boot validation
 ```
 
 ## Architecture
@@ -327,6 +334,38 @@ pin the protocol. Listings (`GET /matches`, `GET /tournaments`) serve
 creation order via a never-serialized monotonic `Sequence` on each record —
 the concurrent dictionaries have no order of their own.
 
+**Admin identity (API keys + tier-C actor journaling).** The admin surface
+has identity: config-defined named API keys (`Admin:ApiKeys`, actor
+name → key value, plaintext by the `Persistence:DataDirectory` trust-domain
+precedent), presented per request in the `X-Api-Key` header —
+`BgTournament.Api.AdminApiKey.HeaderName` is the header SSOT, the
+`VerifiableDice` idiom one contract layer up. One rule covers the whole
+surface (`AdminAuthenticationMiddleware`; only `/engine` is exempt — its gate
+is the hello handshake, and session 3's `engineKey` rides *that*).
+Enforcement is implicit in the configuration: any key configured means every
+admin request must present a valid one; an empty section means anonymous
+service — today's dev/smoke default, announced by a startup warning so
+fail-open is never silent. A presented key is *always* validated: an unknown
+key 401s even on an anonymously-serving server, so a client/server key
+mismatch fails loudly instead of silently working unattributed. A broken key
+set (blank name/key, two names sharing a value) fails the boot; key lookup is
+fixed-time (`CryptographicOperations.FixedTimeEquals`). The authenticated
+actor (the key's *name*, never the key) rides the request as an `AdminActor`
+feature, and the create endpoints stamp it into the durable record: the
+match/tournament `created` journal headers gain an optional `createdBy` —
+the Arc 10-deferred tier-C admin-action journaling, enriching the existing
+headers rather than adding a parallel event family. Deliberately *not* a
+schema bump: the field's absence means exactly "no authenticated actor",
+which is retroactively true of every pre-existing file (anonymous surface),
+of anonymous creations, and of tournament-scheduled matches — those carry no
+actor of their own; the tournament header's actor plus the `matchStarted`
+linkage is their chain of custody. Refusals are evidence: every 401 writes a
+server-journal `adminRejected` event (reason = the exact `ErrorResponse`
+string — the handshake-rejection funnel one gate over; the presented key
+value is never recorded), a new event type and therefore
+`ServerSchemaVersion` 2. The Api response shapes are untouched — `createdBy`
+is journal-only until a surface needs it — and the wire sees none of this.
+
 **Replay shape.** `GET /matches/{matchId}/games` projects a Completed match's
 retained transcripts onto the replay contract (`ReplayProjection`). The
 substrate records each decision in the on-roll player's frame but now stamps
@@ -448,7 +487,8 @@ queried). A new **server journal** (`server/<id>.jsonl`, one segment per
 boot, independently versioned) records engine lifecycle — `started` header,
 `engineConnected`/`engineDisconnected`, `handshakeRejected` with the exact
 wire reason (one funnel in `EngineSocketEndpoint`), and a graceful `stopped`
-marker whose absence is crash evidence. It is deliberately **evidence-only**:
+marker whose absence is crash evidence — plus, since Arc 12, `adminRejected`
+refusal evidence (see "Admin identity"; `ServerSchemaVersion` 2). It is deliberately **evidence-only**:
 sessions are ephemeral, nothing rehydrates from it. The read surface is
 `GET /matches/{matchId}/audit` — new `BgTournament.Api` audit DTOs (the
 fourth event family) projected by `AuditProjection` over the journal's
@@ -590,6 +630,7 @@ public sealed class Tournament
 // Every request/response the admin surface speaks, one record per shape,
 // string enums pinned per member — consumers deserialize with Web defaults.
 public sealed record ErrorResponse(string Error);          // the body of every non-success response
+public static class AdminApiKey { public const string HeaderName = "X-Api-Key"; }  // admin key header SSOT
 public sealed record StartMatchRequest(...);               // POST /matches (optional TimeControl)
 public sealed record StartTournamentRequest(...);          // POST /tournaments (optional TimeControl)
 public sealed record TimeControl                            // validated Fischer control; null = flat regime
@@ -691,11 +732,16 @@ public sealed record AuditTerminalEvent(..., MatchStatus Status,            // "
 //   GET  /tournaments                      every tournament record, creation order
 //   GET  /tournaments/{tournamentId}       status, standings, winner, per-match ledger (ids
 //                                          resolve on GET /matches/{matchId})
+// Every admin endpoint above sits behind the API-key gate (X-Api-Key header)
+// when Admin:ApiKeys is non-empty; refusals are 401 + ErrorResponse. /engine
+// is not gated by it (the handshake is its gate).
 // Config: Tournament:DecisionTimeoutSeconds (default 30; flat regime only — a
 // timeControl replaces it), Tournament:HandshakeTimeoutSeconds (10),
 // Persistence:DataDirectory (default "data" under the content root; the durable
 // journals live in matches/, tournaments/, and server/ beneath it, and fair-mode
-// dice keys are escrowed there — the directory shares the server's trust domain).
+// dice keys are escrowed there — the directory shares the server's trust domain),
+// Admin:ApiKeys (named admin API keys, actor name → key value, plaintext — the
+// same trust domain; empty/absent = anonymous admin service, any key = required).
 ```
 
 ## Pitfalls
@@ -893,6 +939,32 @@ public sealed record AuditTerminalEvent(..., MatchStatus Status,            // "
   `DiceKey.Commit` + context path `matchStarted` used) — never store it in
   the journal or derive it a second way; the no-drift pin is the wire↔audit
   byte equality in `AuditEndpointTests`.
+- **The admin gate's open mode is fail-loud, not fail-silent.** No configured
+  keys = anonymous service (a deliberate default — it keeps dev/smoke and
+  BgArena's in-proc boot working — announced by a startup warning), but a
+  *presented* key is always validated: an unknown key 401s even in open mode,
+  so a client configured with a key against a server that lost its own breaks
+  visibly instead of silently working unattributed. Don't "fix" that 401 into
+  tolerance, and don't add a separate enforce flag — key presence *is* the
+  switch, which is what makes an enforce-without-keys misconfiguration
+  unrepresentable.
+- **`createdBy` is additive under the existing schema versions on purpose.**
+  Its absence means exactly "no authenticated actor" — retroactively true of
+  every pre-Arc-12 file, of anonymous creations, and of tournament-scheduled
+  matches — so old files stay truthful with no bump. That is the governing
+  test for future fields: an optional field whose absence keeps meaning the
+  truth for already-written files may ride the current version; anything else
+  bumps (a new *event type* always does — the server journal's
+  `adminRejected` took `ServerSchemaVersion` to 2).
+- **Scheduled matches deliberately carry no `createdBy`.** The field's
+  semantic is "the actor of the direct authenticated request"; a tournament's
+  scheduled matches are created by orchestration, and their accountability is
+  the tournament header's actor joined through the `matchStarted` linkage.
+  Propagating the name onto each match header would fabricate N direct
+  requests that never happened — and duplicate one recorded decision.
+- **Never journal (or log) a presented key value.** Refusal evidence records
+  the reason, method, and path only — a mistyped *real* secret must not land
+  in a durable file, and the actor stamp is always the key's name.
 
 ## Subproject-internal next steps
 
@@ -932,7 +1004,9 @@ public sealed record AuditTerminalEvent(..., MatchStatus Status,            // "
   stays unbounded). Nothing prunes or archives. Fine at hobby scale; revisit
   when the data directory's growth is ever noticed — server segments are the
   natural first pruning target (evidence-only, orderable by header
-  timestamp).
+  timestamp). Note the segment now also accrues one `adminRejected` line per
+  refused admin request — a misconfigured poller could write them steadily;
+  a rate cap on refusal evidence joins this item's scope if that ever bites.
 - **Disconnect-during-`matchStarted` forfeit gap** — an engine that vanishes
   in the narrow window while `matchStarted` is being sent can surface as a
   Faulted match rather than a Forfeited one (seen once as test flake; the

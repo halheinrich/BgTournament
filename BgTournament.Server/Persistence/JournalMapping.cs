@@ -36,7 +36,8 @@ internal static class JournalMapping
             record.Seed,
             record.DiceKey is null ? null : Protocol.VerifiableDice.AlgorithmId,
             record.DiceKey?.ToHex(),
-            ToJournal(record.TimeControl));
+            ToJournal(record.TimeControl),
+            record.CreatedBy);
 
     /// <summary>A game's frame-free start context, verbatim.</summary>
     public static MatchGameStartedEvent ToEvent(GameStartContext context, DateTimeOffset at) =>
@@ -89,6 +90,11 @@ internal static class JournalMapping
     public static HandshakeRejectedEvent ToRejectedEvent(string reason, string? engineName, DateTimeOffset at) =>
         new(at, reason, engineName);
 
+    /// <summary>An admin-surface refusal, for the server journal — same reason string the response carries.</summary>
+    public static AdminRejectedEvent ToAdminRejectedEvent(
+        string reason, string method, string path, DateTimeOffset at) =>
+        new(at, reason, method, path);
+
     /// <summary>The terminal outcome folded into <paramref name="record"/> by the host.</summary>
     public static MatchTerminalEvent ToTerminalEvent(MatchRecord record, DateTimeOffset at) =>
         new(
@@ -112,7 +118,8 @@ internal static class JournalMapping
             record.Tournament.Format.MatchesPerPairing,
             record.Tournament.Seed,
             record.FairDice,
-            ToJournal(record.TimeControl));
+            ToJournal(record.TimeControl),
+            record.CreatedBy);
 
     /// <summary>The tournament's terminal outcome.</summary>
     public static TournamentTerminalEvent ToTerminalEvent(
