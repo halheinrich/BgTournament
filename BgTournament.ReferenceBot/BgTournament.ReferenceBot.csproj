@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <RootNamespace>BgTournament.ReferenceBot</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- The composition seam (options parsing, client assembly, report
+         formatting) is internal; the in-proc smoke exercises it directly. -->
+    <InternalsVisibleTo Include="BgTournament.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Console logging for the SDK's diagnostics (handshake / lifecycle);
+         the bot's own user-facing output stays on plain Console. -->
+    <PackageReference Include="Microsoft.Extensions.Logging.Console" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\BgTournament.EngineClient\BgTournament.EngineClient.csproj" />
+  </ItemGroup>
+
+</Project>
