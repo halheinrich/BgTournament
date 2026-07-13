@@ -129,6 +129,20 @@ await client.RunAsync(new Uri("ws://localhost:5251/engine"));
 - An exception thrown by your agent drops the connection, which the server
   correctly reads as a forfeit (PROTOCOL.md §9).
 
+**Budgeting your time.** Under a time control your remaining pool is the only
+limit on any single decision, and an emptied pool forfeits (PROTOCOL.md §10 —
+the semantics and worked examples). Agents opt into the clock by implementing
+`IClockAwarePlayAgent` / `IClockAwareCubeAgent` (extensions of the plain agent
+interfaces — the constructor call above is unchanged): the client announces
+each match's control up front via `OnTimeControlAnnounced` — always fired, and
+`null` affirmatively means the match is unclocked, so answer promptly — and
+delivers a `ClockReading` (both pools, as of query issuance) with every
+decision of a clocked match. In the flat regime no reading is delivered and no
+sentinel stands in for pools that do not exist. A reading is a stamp, not a
+live clock, and network latency is on your clock (PROTOCOL.md §10) — budget
+for your round trip. The SDK also logs each clocked query's pools at `debug`
+level, which the reference bot exposes via `--verbosity debug`.
+
 ## 5. Run the bundled reference bot
 
 `BgTournament.ReferenceBot` is exactly the SDK wiring above, made runnable: the

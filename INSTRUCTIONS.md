@@ -134,11 +134,16 @@ BgTournament/
 │       ├── JournalRehydrator.cs        startup fold: journals → records, before endpoints serve
 │       └── PersistenceOptions.cs       Persistence:DataDirectory (appsettings)
 ├── BgTournament.EngineClient/          .NET SDK + reference agents
-│   ├── EngineClient.cs                 connect/handshake/serve loop over local agents; optional fair-dice verify hook
+│   ├── EngineClient.cs                 connect/handshake/serve loop over local agents; fair-dice hook; clock-aware dispatch
 │   ├── EngineIdentity.cs               hello identity
 │   ├── HandshakeRejectedException.cs
 │   ├── DiceVerification.cs             pure fair-dice verifier + DiceVerificationReport / ObservedRoll
 │   ├── DiceAuditRecorder.cs            per-match observation accumulator feeding the verifier at match end
+│   ├── IClockAwareAgent.cs             clock opt-in base: the always-fired nullable control announcement
+│   ├── IClockAwarePlayAgent.cs         IPlayAgent + the ClockReading play overload (clocked decisions)
+│   ├── IClockAwareCubeAgent.cs         ICubeAgent + the ClockReading cube overloads (clocked decisions)
+│   ├── MatchTimeControl.cs             the announced Fischer control, TimeSpan-typed
+│   ├── ClockReading.cs                 both pools as of query issuance, TimeSpan-typed
 │   ├── RandomPlayAgent.cs              reference play policy (seed required)
 │   └── PassiveCubeAgent.cs             reference cube policy (never double, always take)
 ├── BgTournament.ReferenceBot/          runnable console host over EngineClient (the third-party door)
@@ -165,7 +170,8 @@ BgTournament/
     ├── TournamentFairDiceTests.cs      unseeded tournament ⇒ per-match keys; seeded ⇒ none
     ├── TimeControlTests.cs             the validated value type + its JsonException funnel
     ├── MatchClockTests.cs              Fischer arithmetic, deterministic on a fake TimeProvider
-    ├── TimeControlWireTests.cs         clocks end to end: announcement, pools, flag fall, tournament fold
+    ├── TimeControlWireTests.cs         clocks end to end: announcement, pools, flag fall, tournament
+    │                                   fold, SDK surfacing (hosted clock-aware agent, flat-regime honesty)
     ├── ListEndpointTests.cs            /matches + /tournaments listings, creation order
     ├── ReplayProjectionTests.cs        the stamped-seat projection on scripted-dice MatchRunner runs
     ├── ReplayEndpointTests.cs          /matches/{id}/games over TestServer, 404/409/partial
@@ -313,10 +319,19 @@ source a future arbitration log will reuse. On the wire it is all additive v1
 (the fair-dice precedent): `matchStarted.timeControl` announces the control
 so engines budget the match, and every query carries both pools
 (`yourTimeRemainingSeconds`/`opponentTimeRemainingSeconds`, stamped at query
-issuance, frame-rule naming). Wire-only in v1: substrate agents and
-EngineClient-hosted agents never see the clock (SDK surfacing is a recorded
-next step). A tournament-level control governs every scheduled match, each on
-a fresh clock; a flag fall folds as an ordinary win for the non-offender.
+issuance, frame-rule naming). The SDK surfaces the clock to hosted agents
+that opt in — `IClockAwarePlayAgent`/`IClockAwareCubeAgent`, detected by type
+per role with no constructor change: the control is announced once per match,
+always and nullable (`OnTimeControlAnnounced(null)` affirmatively means
+unclocked — the flat regime's timeout is server config the wire cannot tell
+the agent), and each clocked decision arrives with a `ClockReading` of both
+pools; the flat regime delivers no reading and never a sentinel — the regime
+is said by shape. Substrate `IPlayAgent`/`ICubeAgent` stay clock-free on
+purpose: a substrate decision-context parameter (with `MatchRunner` growing
+clock knowledge of its own) remains the recorded long-term option if in-proc
+clocked matches ever exist. A tournament-level control governs every
+scheduled match, each on a fresh clock; a flag fall folds as an ordinary win
+for the non-offender.
 
 **Tournament shape.** One seam, mirrored one layer up from
 MatchRunner ↔ MatchService: `BgTournament.Core` is an execution-blind,
@@ -586,7 +601,10 @@ untouched: PROTOCOL.md stays v1; engines see none of this.
 with a `ClientWebSocket`. No perspective work client-side — the unified frame
 rule means query states map straight onto the local agent contract. A local
 agent exception drops the connection, which the server correctly reads as a
-forfeit.
+forfeit. Clock-aware agents (see "Time controls") are detected per role and
+served the per-decision clock; plain agents are served exactly as before, and
+every clocked query's pools are logged at `Debug` — the reference bot's
+`--verbosity debug` showcases the clock with no bot code involved.
 
 **Reference-bot executable.** `BgTournament.ReferenceBot` is the SDK made
 runnable — the third-party door as an actual process: a thin `Program` over
@@ -679,6 +697,31 @@ public sealed class EngineClient
                         Action<DiceVerificationReport>? onDiceVerified = null);  // fair-dice hook (opt-in)
     public Task RunAsync(Uri serverUri, CancellationToken ct = default);
     public Task ServeAsync(WebSocket socket, CancellationToken ct = default);
+}
+
+// SDK clock surfacing (PROTOCOL.md §10) — opt-in, detected by type per role;
+// plain agents are served unchanged and the ctor stays as-is. The regime is
+// said by shape, never by sentinel: the announcement always fires (null =
+// affirmatively unclocked), ClockReadings exist only in clocked matches.
+public sealed record MatchTimeControl(TimeSpan Initial, TimeSpan Increment);
+public sealed record ClockReading(TimeSpan YourTimeRemaining, TimeSpan OpponentTimeRemaining);
+    // stamped at query issuance — the pending decision's own cost is not yet debited
+public interface IClockAwareAgent
+{
+    void OnTimeControlAnnounced(MatchTimeControl? timeControl);  // once per match, before any decision;
+                                                                 // a dual-role object hears it once
+}
+public interface IClockAwarePlayAgent : IPlayAgent, IClockAwareAgent
+{
+    ValueTask<Play> ChoosePlayAsync(GameState state, int die1, int die2,
+        ClockReading clock, CancellationToken cancellationToken = default);
+}
+public interface IClockAwareCubeAgent : ICubeAgent, IClockAwareAgent
+{
+    ValueTask<CubeAction> ChooseOfferAsync(GameState state,
+        ClockReading clock, CancellationToken cancellationToken = default);
+    ValueTask<CubeAction> ChooseResponseAsync(GameState state,
+        ClockReading clock, CancellationToken cancellationToken = default);
 }
 
 // Fair-dice verification — pure, standalone; also driven automatically by the
@@ -977,6 +1020,26 @@ public sealed record AuditTerminalEvent(..., MatchStatus Status,            // "
   credits the increment only if `MarkAnswered()` ran first — a flag fall,
   violation, disconnect, or external cancellation debits without credit. Keep
   `MarkAnswered` after the exchange returns, never before.
+- **The flat regime has no pools — the SDK says so by shape.** A clock-aware
+  agent hears `OnTimeControlAnnounced(null)` (the announcement always fires)
+  and then no `ClockReading` at all: the plain choose methods carry every
+  flat-regime decision. Never fabricate a reading or a sentinel (no
+  infinite/zero/negative pools an agent might arithmetic on), and don't "fix"
+  the announcement to fire only when clocked — its null is the affirmative
+  unclocked signal, and the flat per-decision timeout is server-side config
+  the wire cannot tell the agent. A query carrying only one of the two pool
+  fields is out of contract and deliberately treated as unclocked
+  (`EngineClient.ClockOf`) — half a clock is never invented.
+- **Clock-awareness is detected per role object; the announcement dedupes by
+  reference.** `EngineClient` type-tests the play and cube agents separately
+  (one can be aware while the other stays plain — the hosted-SDK wire test
+  pins the mixed case), and one object serving both roles hears each match's
+  announcement exactly once (`ReferenceEquals` in `AnnounceTimeControl`).
+- **A `ClockReading` is a stamp, not a live clock.** Pools are stamped at
+  query issuance: the pending decision's own thinking time is not yet
+  debited, and the network round trip lands on the queried player's clock
+  (PROTOCOL.md §10). An agent budgeting to the reading's exact edge will flag
+  on latency; the SDK deliberately does not "correct" for any of this.
 - **A tournament binds the sessions present at start.** A participant that
   disconnects — or is kicked by a forfeit close — forfeits its remaining
   matches without play, even if it reconnects under the same name. Both sides
@@ -1175,11 +1238,6 @@ public sealed record AuditTerminalEvent(..., MatchStatus Status,            // "
 - **Per-match timeout override** — `POST /matches` could carry an optional
   decision timeout; global-only configuration today. (A Fischer `timeControl`
   already gives per-match timing; this item is about the flat regime.)
-- **SDK clock surfacing** — time controls are wire-only in v1: EngineClient
-  deserializes `matchStarted.timeControl` and the per-query pools but exposes
-  none of it, and substrate `IPlayAgent`/`ICubeAgent` carry no time parameter,
-  so hosted agents cannot budget. Surface the clock through the SDK (the
-  umbrella menu pairs this with the competitor onboarding pack).
 - **Tournament rejoin policy** — v1 binds the sessions present at start;
   re-resolving a participant by name at each scheduled match (so a
   reconnected engine plays on) is a candidate once real remote engines flake.
