@@ -42,6 +42,8 @@ BgTournament/
 ├── BgTournament.slnx
 ├── Directory.Packages.props            CPM — inline Version= is banned
 ├── PROTOCOL.md                         THE engine contract (language-neutral, versioned)
+├── ONBOARDING.md                       competitor on-ramp: register → connect → play (links PROTOCOL.md)
+├── RULES.md                            championship conduct: attestation, forfeits, fair dice (links PROTOCOL/ONBOARDING)
 ├── INSTRUCTIONS.md
 ├── BgTournament.Protocol/              wire contract's .NET binding + substrate bridge
 │   ├── ProtocolMessage.cs              polymorphic base; "type" discriminator registry
@@ -131,7 +133,7 @@ BgTournament/
 │       ├── RosterJournal.cs            synchronous per-boot roster segment (durable-before-answered)
 │       ├── JournalRehydrator.cs        startup fold: journals → records, before endpoints serve
 │       └── PersistenceOptions.cs       Persistence:DataDirectory (appsettings)
-├── BgTournament.EngineClient/          .NET SDK + reference bot
+├── BgTournament.EngineClient/          .NET SDK + reference agents
 │   ├── EngineClient.cs                 connect/handshake/serve loop over local agents; optional fair-dice verify hook
 │   ├── EngineIdentity.cs               hello identity
 │   ├── HandshakeRejectedException.cs
@@ -139,13 +141,20 @@ BgTournament/
 │   ├── DiceAuditRecorder.cs            per-match observation accumulator feeding the verifier at match end
 │   ├── RandomPlayAgent.cs              reference play policy (seed required)
 │   └── PassiveCubeAgent.cs             reference cube policy (never double, always take)
+├── BgTournament.ReferenceBot/          runnable console host over EngineClient (the third-party door)
+│   ├── Program.cs                      thin entry: parse → compose → serve; named exit codes, no stack traces
+│   ├── ReferenceBotOptions.cs          validated CLI args (Parse → UsageException funnel)
+│   ├── ReferenceBot.cs                 composition seam: CreateClient + DescribeDiceReport + usage text
+│   ├── ExitCode.cs                     sysexits-style outcomes (0/64/68/69/130)
+│   └── UsageException.cs               the one CLI-usage error funnel
 └── BgTournament.Tests/
     ├── GoldenWireTests.cs              byte-for-byte wire pins, every message
     ├── ApiGoldenTests.cs               byte-for-byte admin JSON pins, every shape + enum
     ├── ProtocolRoundTripTests.cs       strictness + tolerance edges
     ├── ProtocolDocTests.cs             PROTOCOL.md examples stay canonical wire text
     ├── WireMappingTests.cs             field preservation + the no-double-flip pin
-    ├── ReferenceBotTests.cs            legality sweep, determinism, empty play
+    ├── ReferenceBotTests.cs            legality sweep, determinism, empty play (the agent)
+    ├── ReferenceBotHostTests.cs        the exe's host seam: parse/format units + in-proc composition smoke
     ├── PlayResolverTests.cs            hit restoration, route disambiguation, dance resolution
     ├── RemoteEngineAgentTests.cs       forfeit taxonomy over a scripted channel
     ├── ServerTestHarness.cs            TestEngine (raw-wire scripting) + helpers
@@ -579,6 +588,26 @@ rule means query states map straight onto the local agent contract. A local
 agent exception drops the connection, which the server correctly reads as a
 forfeit.
 
+**Reference-bot executable.** `BgTournament.ReferenceBot` is the SDK made
+runnable — the third-party door as an actual process: a thin `Program` over
+`EngineClient` + the reference `RandomPlayAgent`/`PassiveCubeAgent`, driven by
+validated command-line options. It is at once the baseline opponent, a
+connection smoke test, and a worked example for engine authors. Everything
+worth testing sits behind a composition seam — `ReferenceBot.CreateClient`
+(assemble the client), `ReferenceBotOptions.Parse` (the CLI → `UsageException`
+funnel), and the pure `DescribeDiceReport` — which the in-proc smoke drives
+directly over a TestServer socket, exactly the composition `Program` connects
+to the wire. `Program` itself only wires args to that seam, prints the
+fair-dice report through the SDK's `onDiceVerified` hook, and maps every
+failure to a named `ExitCode` (handshake rejection, connection loss, usage,
+interrupt) rather than a stack trace. User-facing output is plain `Console`
+(usage/errors to stderr, report to stdout); the SDK's diagnostics flow through
+a console `ILogger` filtered by `--verbosity`, so log configuration never holds
+the showcase output hostage. The competitor-facing docs `ONBOARDING.md`
+(connect walkthrough) and `RULES.md` (conduct) sit beside `PROTOCOL.md`; both
+link into it for wire behavior and reproduce no wire example, keeping
+`ProtocolDocTests` the sole pin on wire text.
+
 ## Public API
 
 ```csharp
@@ -832,6 +861,14 @@ public sealed record AuditTerminalEvent(..., MatchStatus Status,            // "
 // trust domain),
 // Admin:ApiKeys (named admin API keys, actor name → key value, plaintext — the
 // same trust domain; empty/absent = anonymous admin service, any key = required).
+
+// BgTournament.ReferenceBot — an application, not a library: all types
+// internal (InternalsVisibleTo the tests for the composition smoke). Its API
+// is the command line:
+//   BgTournament.ReferenceBot --server <ws|wss uri> --name <name>
+//       [--seed <int>] [--version <s>] [--author <s>] [--engine-key <hex>]
+//       [--verbosity trace|debug|information|warning|error|critical|none] [--help]
+//   Exit: 0 served · 64 usage · 68 connection · 69 handshake-rejected · 130 interrupted.
 ```
 
 ## Pitfalls
@@ -870,6 +907,15 @@ public sealed record AuditTerminalEvent(..., MatchStatus Status,            // "
 - **In wire tests, await the client connect in the test body.** A
   fire-and-forget connect inside a background task swallows the real failure
   and surfaces as an unrelated registration timeout.
+- **The reference bot's `Program` is namespaced on purpose — don't "simplify"
+  it to top-level statements.** `BgTournament.ReferenceBot.Program` is an
+  explicit class, not a top-level-statements file, because the shared Tests
+  project references both it and `BgTournament.Server`, whose top-level
+  `Program` lives in the global namespace and anchors
+  `WebApplicationFactory<Program>`. A second global `Program` makes that type
+  reference ambiguous (CS0104) across the test project. Keep the bot's entry
+  point namespaced; the class/namespace collision with the SDK's `EngineClient`
+  type is why the bot and its tests alias it (`EngineClientSdk` / `Bot`).
 - **`EngineConnection.CloseAsync` is a half-close on purpose.** It sends the
   close frame (`CloseOutputAsync`) without waiting for the peer's ack — a
   misbehaving engine may never send one, and `WebSocket.CloseAsync` would hang
@@ -1115,9 +1161,12 @@ public sealed record AuditTerminalEvent(..., MatchStatus Status,            // "
   drop) rather than letting it grow.
 - **`xgid` decoration** — the state schema reserves it; populate when an
   in-tree XGID formatter exists (none today).
-- **Runnable reference-bot executable** — a small console host over
-  `EngineClient` + the reference bot, for connecting to a remote server the
-  way third parties will (the SDK and bot are library-only today).
+- **Compile-guarded doc samples** — `ONBOARDING.md`'s C# SDK snippet and its
+  `curl` registration body are unguarded prose: nothing fails if they drift
+  from the real SDK/admin surface. A doc-extraction compile check (the
+  `ProtocolDocTests` idiom, one format over) would close it if drift ever
+  bites; the tested `BgTournament.ReferenceBot` source is the canonical worked
+  example in the meantime.
 - **Flat-regime decision timing** — the arbitration log's `clock` events
   exist only for clocked matches, because `MatchClock` is the one measurement
   seam. Giving flat-regime matches per-decision think-time evidence would
