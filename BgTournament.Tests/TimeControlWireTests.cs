@@ -1,9 +1,13 @@
 using System.Net;
 using System.Net.Http.Json;
+using System.Net.WebSockets;
 using System.Text.Json;
+using BgDataTypes_Lib;
 using BgGame_Lib;
 using BgTournament.Api;
+using BgTournament.EngineClient;
 using BgTournament.Protocol;
+using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.Time.Testing;
 
 namespace BgTournament.Tests;
@@ -16,6 +20,11 @@ namespace BgTournament.Tests;
 /// request validation. Deterministic throughout — the server's clock runs on a
 /// <see cref="FakeTimeProvider"/>, so "thinking time" is advanced explicitly,
 /// never slept.
+///
+/// <para>The hosted-SDK region proves the clock crosses the last mile: an
+/// <c>EngineClient</c>-hosted clock-aware agent observes the announced control
+/// and the per-query pools, and a flat-regime match surfaces the absence
+/// honestly (null announcement, no readings — never a fabricated value).</para>
 /// </summary>
 public class TimeControlWireTests
 {
@@ -221,5 +230,239 @@ public class TimeControlWireTests
         }
 
         return die1 > die2;
+    }
+
+    // ---- SDK clock surfacing: the hosted-agent side of the same wire ----
+
+    private static readonly TimeSpan HostedDeadline = TimeSpan.FromSeconds(60);
+
+    /// <summary>
+    /// A dual-role clock-aware recording agent: play delegates to
+    /// <see cref="RandomPlayAgent"/>, the cube to <see cref="PassiveCubeAgent"/>,
+    /// while every announcement and clock reading the SDK delivers — and every
+    /// plain-overload call — is recorded for assertion.
+    /// </summary>
+    private sealed class ClockRecordingAgent : IClockAwarePlayAgent, IClockAwareCubeAgent
+    {
+        private readonly RandomPlayAgent _play = new(seed: 11);
+        private readonly PassiveCubeAgent _cube = new();
+
+        public List<MatchTimeControl?> Announcements { get; } = new();
+        public List<ClockReading> PlayReadings { get; } = new();
+        public List<ClockReading> OfferReadings { get; } = new();
+        public List<ClockReading> ResponseReadings { get; } = new();
+        public int PlainPlayCalls { get; private set; }
+        public int PlainOfferCalls { get; private set; }
+        public int PlainResponseCalls { get; private set; }
+
+        public IEnumerable<ClockReading> AllReadings =>
+            PlayReadings.Concat(OfferReadings).Concat(ResponseReadings);
+
+        public void OnTimeControlAnnounced(MatchTimeControl? timeControl) =>
+            Announcements.Add(timeControl);
+
+        public ValueTask<Play> ChoosePlayAsync(
+            GameState state, int die1, int die2, ClockReading clock, CancellationToken cancellationToken = default)
+        {
+            PlayReadings.Add(clock);
+            return _play.ChoosePlayAsync(state, die1, die2, cancellationToken);
+        }
+
+        public ValueTask<Play> ChoosePlayAsync(
+            GameState state, int die1, int die2, CancellationToken cancellationToken = default)
+        {
+            PlainPlayCalls++;
+            return _play.ChoosePlayAsync(state, die1, die2, cancellationToken);
+        }
+
+        public ValueTask<CubeAction> ChooseOfferAsync(
+            GameState state, ClockReading clock, CancellationToken cancellationToken = default)
+        {
+            OfferReadings.Add(clock);
+            return _cube.ChooseOfferAsync(state, cancellationToken);
+        }
+
+        public ValueTask<CubeAction> ChooseOfferAsync(
+            GameState state, CancellationToken cancellationToken = default)
+        {
+            PlainOfferCalls++;
+            return _cube.ChooseOfferAsync(state, cancellationToken);
+        }
+
+        public ValueTask<CubeAction> ChooseResponseAsync(
+            GameState state, ClockReading clock, CancellationToken cancellationToken = default)
+        {
+            ResponseReadings.Add(clock);
+            return _cube.ChooseResponseAsync(state, cancellationToken);
+        }
+
+        public ValueTask<CubeAction> ChooseResponseAsync(
+            GameState state, CancellationToken cancellationToken = default)
+        {
+            PlainResponseCalls++;
+            return _cube.ChooseResponseAsync(state, cancellationToken);
+        }
+    }
+
+    /// <summary>
+    /// Connect a hosted EngineClient serving <paramref name="agent"/> in both
+    /// roles (the SDK door, not raw wire) — connect awaited here so a failure
+    /// surfaces in the test, then served in the background until teardown.
+    /// </summary>
+    private static async Task ConnectHostedAsync(
+        WebApplicationFactory<Program> factory, string name, ClockRecordingAgent agent)
+    {
+        var socket = await factory.Server.CreateWebSocketClient()
+            .ConnectAsync(new Uri("ws://localhost/engine"), CancellationToken.None);
+        var client = new EngineClient.EngineClient(new EngineIdentity(name), agent, agent);
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await client.ServeAsync(socket);
+            }
+            catch (Exception ex) when (ex is OperationCanceledException or WebSocketException or IOException)
+            {
+                // Test teardown: server ended the session.
+            }
+        });
+    }
+
+    /// <summary>
+    /// A hosted clock-aware agent observes the whole clocked surface through
+    /// the SDK: the control announced once (the dual-role object hears it
+    /// once, not per role), a full-pool first reading, cube offer and response
+    /// readings, and the your/opponent frame mapping — the scripted opponent's
+    /// slow thinking sinks the <em>opponent</em> pool below initial while the
+    /// agent's own pool only banks credits. The plain overloads are never
+    /// touched in a clocked match.
+    /// </summary>
+    [Fact]
+    public async Task HostedClockAwareAgent_ObservesControlAndPools_ThroughTheSdk()
+    {
+        // Initial pool big enough that the scripted side never flags; the
+        // 10 s scripted think per play out-earns the 3 s increment, so its
+        // pool sinks visibly below initial.
+        var control = new TimeControl(initialSeconds: 10_000, incrementSeconds: 3);
+        var initial = TimeSpan.FromSeconds(10_000);
+
+        var time = new FakeTimeProvider();
+        using var factory = ServerHarness.NewFactory(timeProvider: time);
+        var agent = new ClockRecordingAgent();
+        await ConnectHostedAsync(factory, "Aware", agent);
+        await using var scripted = await TestEngine.ConnectAsync(factory, "Scripted");
+        await ServerHarness.WaitForEnginesAsync(factory, "Aware", "Scripted");
+
+        int seed = ServerHarness.SeedWhereSeatOneMovesFirst();
+        var match = await ServerHarness.StartMatchAsync(
+            factory, "Aware", "Scripted", matchLength: 3, seed, timeControl: control);
+        string matchId = match.GetProperty("matchId").GetString()!;
+
+        // Script the opponent: think a fixed 10 s on every play (advancing the
+        // fake clock while its own query is the one in flight), double at the
+        // first opportunity (driving one cube-response reading on the hosted
+        // side), decline every later offer.
+        bool doubled = false;
+        while (true)
+        {
+            var message = await scripted.ReceiveAsync();
+            Assert.NotNull(message);
+            if (message is MatchEndedMessage)
+            {
+                break;
+            }
+
+            switch (message)
+            {
+                case MatchStartedMessage:
+                    break;
+                case PlayQueryMessage play:
+                    time.Advance(TimeSpan.FromSeconds(10));
+                    await scripted.ReplyWithFirstLegalPlayAsync(play);
+                    break;
+                case CubeOfferQueryMessage offer:
+                    await scripted.SendAsync(new CubeOfferReplyMessage
+                    {
+                        RequestId = offer.RequestId,
+                        Action = doubled ? CubeOfferAction.NoDouble : CubeOfferAction.Double,
+                    });
+                    doubled = true;
+                    break;
+                default:
+                    Assert.Fail($"Unexpected message for the scripted side: {message.GetType().Name}.");
+                    break;
+            }
+        }
+
+        var summary = await ServerHarness.WaitForMatchEndAsync(factory, matchId, HostedDeadline);
+        Assert.Equal("completed", summary.GetProperty("status").GetString());
+
+        // The dual-role agent heard the announcement exactly once, with the control.
+        var announced = Assert.Single(agent.Announcements);
+        Assert.NotNull(announced);
+        Assert.Equal(initial, announced!.Initial);
+        Assert.Equal(TimeSpan.FromSeconds(3), announced.Increment);
+
+        // Every decision of a clocked match went through the clock-carrying
+        // overloads; the plain ones were never touched.
+        Assert.Equal(0, agent.PlainPlayCalls);
+        Assert.Equal(0, agent.PlainOfferCalls);
+        Assert.Equal(0, agent.PlainResponseCalls);
+
+        // The agent moved first (seed chosen for that): the match's first
+        // reading shows both pools full, nothing yet debited or credited.
+        Assert.NotEmpty(agent.PlayReadings);
+        Assert.Equal(new ClockReading(initial, initial), agent.PlayReadings[0]);
+
+        // This agent answers instantly on the fake clock, so its own pool only
+        // banks credits — never below initial…
+        Assert.All(agent.AllReadings, r => Assert.True(
+            r.YourTimeRemaining >= initial,
+            $"Own pool fell below initial: {r.YourTimeRemaining}."));
+
+        // …while the scripted opponent's thinking sinks the opponent pool
+        // below initial: the your/opponent frame mapping, pinned (a swap would
+        // put the sunken pool on the wrong side).
+        Assert.True(
+            agent.PlayReadings[^1].OpponentTimeRemaining < initial,
+            $"Opponent pool never sank below initial: {agent.PlayReadings[^1].OpponentTimeRemaining}.");
+
+        // The cube path delivered readings too: the scripted double produced
+        // exactly one response decision, and owning the cube afterwards
+        // produced offer decisions.
+        Assert.NotEmpty(agent.OfferReadings);
+        Assert.Single(agent.ResponseReadings);
+    }
+
+    /// <summary>
+    /// The flat regime through the SDK, honest by shape: the announcement
+    /// still fires — null affirmatively says "unclocked" — and no reading is
+    /// ever delivered (the plain overloads carry every decision); no sentinel
+    /// stands in for pools that do not exist.
+    /// </summary>
+    [Fact]
+    public async Task HostedClockAwareAgent_FlatRegime_NullAnnouncementAndNoReadings()
+    {
+        using var factory = ServerHarness.NewFactory();
+        var agent = new ClockRecordingAgent();
+        await ConnectHostedAsync(factory, "Aware", agent);
+        await ServerHarness.RunWellBehavedClientAsync(factory, "Plain", seed: 7, CancellationToken.None);
+        await ServerHarness.WaitForEnginesAsync(factory, "Aware", "Plain");
+
+        var match = await ServerHarness.StartMatchAsync(
+            factory, "Aware", "Plain", matchLength: 1, seed: 4242);
+        string matchId = match.GetProperty("matchId").GetString()!;
+        var summary = await ServerHarness.WaitForMatchEndAsync(factory, matchId, HostedDeadline);
+        Assert.Equal("completed", summary.GetProperty("status").GetString());
+
+        // Announced exactly once, affirmatively unclocked.
+        var announced = Assert.Single(agent.Announcements);
+        Assert.Null(announced);
+
+        // No readings anywhere; every decision went through the plain overloads.
+        Assert.Empty(agent.PlayReadings);
+        Assert.Empty(agent.OfferReadings);
+        Assert.Empty(agent.ResponseReadings);
+        Assert.True(agent.PlainPlayCalls > 0, "The agent decided no plays at all.");
     }
 }

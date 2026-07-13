@@ -20,12 +20,21 @@ namespace BgTournament.EngineClient;
 /// <para>An exception thrown by a local agent propagates out of the serve
 /// loop and drops the connection — which the server correctly treats as a
 /// forfeit by this engine.</para>
+///
+/// <para>Clock surfacing (PROTOCOL.md §10): an agent that implements
+/// <see cref="IClockAwarePlayAgent"/> / <see cref="IClockAwareCubeAgent"/>
+/// hears each match's time control announced up front (null = unclocked) and
+/// receives a <see cref="ClockReading"/> with every decision in a clocked
+/// match. Detection is by type, per role — plain agents are served exactly as
+/// before, and the constructor is unchanged.</para>
 /// </summary>
 public sealed class EngineClient
 {
     private readonly EngineIdentity _identity;
     private readonly IPlayAgent _playAgent;
     private readonly ICubeAgent _cubeAgent;
+    private readonly IClockAwarePlayAgent? _clockAwarePlayAgent;
+    private readonly IClockAwareCubeAgent? _clockAwareCubeAgent;
     private readonly ILogger<EngineClient>? _logger;
     private readonly Action<DiceVerificationReport>? _onDiceVerified;
     private readonly string? _engineKey;
@@ -68,6 +77,8 @@ public sealed class EngineClient
         _identity = identity;
         _playAgent = playAgent;
         _cubeAgent = cubeAgent;
+        _clockAwarePlayAgent = playAgent as IClockAwarePlayAgent;
+        _clockAwareCubeAgent = cubeAgent as IClockAwareCubeAgent;
         _logger = logger;
         _onDiceVerified = onDiceVerified;
         _engineKey = engineKey;
@@ -150,9 +161,14 @@ public sealed class EngineClient
                 case PlayQueryMessage query:
                 {
                     diceAudit.OnPlayQuery(query);
-                    var play = await _playAgent
-                        .ChoosePlayAsync(query.State.ToGameState(), query.Die1, query.Die2, cancellationToken)
-                        .ConfigureAwait(false);
+                    var clock = ClockOf(query);
+                    var play = _clockAwarePlayAgent is not null && clock is not null
+                        ? await _clockAwarePlayAgent
+                            .ChoosePlayAsync(query.State.ToGameState(), query.Die1, query.Die2, clock, cancellationToken)
+                            .ConfigureAwait(false)
+                        : await _playAgent
+                            .ChoosePlayAsync(query.State.ToGameState(), query.Die1, query.Die2, cancellationToken)
+                            .ConfigureAwait(false);
                     await channel.SendAsync(
                         new PlayReplyMessage { RequestId = query.RequestId, Moves = play.ToWireMoves() },
                         cancellationToken).ConfigureAwait(false);
@@ -161,9 +177,14 @@ public sealed class EngineClient
 
                 case CubeOfferQueryMessage query:
                 {
-                    var action = await _cubeAgent
-                        .ChooseOfferAsync(query.State.ToGameState(), cancellationToken)
-                        .ConfigureAwait(false);
+                    var clock = ClockOf(query);
+                    var action = _clockAwareCubeAgent is not null && clock is not null
+                        ? await _clockAwareCubeAgent
+                            .ChooseOfferAsync(query.State.ToGameState(), clock, cancellationToken)
+                            .ConfigureAwait(false)
+                        : await _cubeAgent
+                            .ChooseOfferAsync(query.State.ToGameState(), cancellationToken)
+                            .ConfigureAwait(false);
                     await channel.SendAsync(
                         new CubeOfferReplyMessage
                         {
@@ -182,9 +203,14 @@ public sealed class EngineClient
 
                 case CubeResponseQueryMessage query:
                 {
-                    var action = await _cubeAgent
-                        .ChooseResponseAsync(query.State.ToGameState(), cancellationToken)
-                        .ConfigureAwait(false);
+                    var clock = ClockOf(query);
+                    var action = _clockAwareCubeAgent is not null && clock is not null
+                        ? await _clockAwareCubeAgent
+                            .ChooseResponseAsync(query.State.ToGameState(), clock, cancellationToken)
+                            .ConfigureAwait(false)
+                        : await _cubeAgent
+                            .ChooseResponseAsync(query.State.ToGameState(), cancellationToken)
+                            .ConfigureAwait(false);
                     await channel.SendAsync(
                         new CubeResponseReplyMessage
                         {
@@ -203,6 +229,7 @@ public sealed class EngineClient
 
                 case MatchStartedMessage started:
                     diceAudit.OnMatchStarted(started);
+                    AnnounceTimeControl(started.TimeControl);
                     _logger?.LogInformation(
                         "Engine {EngineName}: match {MatchId} started against {Opponent} (length {MatchLength}).",
                         _identity.Name, started.MatchId, started.Opponent, started.MatchLength);
@@ -220,6 +247,53 @@ public sealed class EngineClient
                         $"Unexpected message from server: {message.GetType().Name}.");
             }
         }
+    }
+
+    // Deliver the match-start clock announcement to any clock-aware agent —
+    // always, clocked or not: null affirmatively says "this match is
+    // unclocked" (the flat regime's per-decision timeout is server-side
+    // configuration that never rides the wire, so null is the honest ceiling
+    // of what can be said). One announcement per match per distinct agent
+    // object: one object serving both roles hears it once.
+    private void AnnounceTimeControl(WireTimeControl? announced)
+    {
+        if (_clockAwarePlayAgent is null && _clockAwareCubeAgent is null)
+        {
+            return;
+        }
+
+        MatchTimeControl? control = announced is null
+            ? null
+            : new MatchTimeControl(
+                TimeSpan.FromSeconds(announced.InitialSeconds),
+                TimeSpan.FromSeconds(announced.IncrementSeconds));
+
+        _clockAwarePlayAgent?.OnTimeControlAnnounced(control);
+        if (_clockAwareCubeAgent is not null && !ReferenceEquals(_clockAwareCubeAgent, _clockAwarePlayAgent))
+        {
+            _clockAwareCubeAgent.OnTimeControlAnnounced(control);
+        }
+    }
+
+    // The query's clock reading, or null in the flat regime (whose queries
+    // carry no pool fields — nothing is delivered, and no sentinel is ever
+    // fabricated). Both pools must be present together: a query carrying only
+    // one is out of contract, and the decided policy is to treat it as
+    // unclocked rather than invent the missing half. Logged at Debug so a
+    // clocked session's pools are visible with no agent opt-in (e.g. the
+    // reference bot at --verbosity debug).
+    private ClockReading? ClockOf(QueryMessage query)
+    {
+        if (query.YourTimeRemainingSeconds is not double yours ||
+            query.OpponentTimeRemainingSeconds is not double opponent)
+        {
+            return null;
+        }
+
+        _logger?.LogDebug(
+            "Engine {EngineName}: clock at query issuance — you {YourSeconds}s, opponent {OpponentSeconds}s.",
+            _identity.Name, yours, opponent);
+        return new ClockReading(TimeSpan.FromSeconds(yours), TimeSpan.FromSeconds(opponent));
     }
 
     // Deliver a fair-dice verification report to the consumer's hook. The
