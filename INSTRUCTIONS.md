@@ -1264,6 +1264,16 @@ public sealed record AuditTerminalEvent(..., MatchStatus Status,            // "
   boots write nothing), so its growth is admin-action-paced and negligible;
   roster segments are the one kind that must **never** be pruned casually —
   the roster's state is their fold, so deleting one rewrites history.
+- **Flaky `MatExportEndpointTests.ExportEndpoint_Faulted_AbandonedWithInternalErrorReason`**
+  — failed once on a cold full-suite run, then green in isolation and on warm
+  re-runs (217/217). A timing race on the Faulted-match export path: the match
+  faults on a background thread and the export endpoint races that fault.
+  Pre-existing on `db074ec` (Arc 7 — the commit that noted the Faulted export
+  test's upgrade path), independent of the DecisionId bump whose
+  consumer-graph audit surfaced it. Fix: make the export deterministic — gate
+  it on fault completion (or otherwise remove the race) rather than papering
+  over with a retry. Its own hygiene touch (the Arc 8 session closed without
+  taking the ride-along).
 - **Disconnect-during-`matchStarted` forfeit gap** — an engine that vanishes
   in the narrow window while `matchStarted` is being sent can surface as a
   Faulted match rather than a Forfeited one (seen once as test flake; the
