@@ -20,14 +20,12 @@ https://github.com/halheinrich/BgTournament — branch `main`.
 
 ## Depends on
 
-- **BgDataTypes_Lib** — `Play`/`Move` (sign-encoded hits; canonical `Play`
-  equality — order/decomposition-insensitive, fully hit-sensitive),
-  `BoardState.FromMop`, `CubeAction`/`CubeOwner`.
-- **BgGame_Lib** — `IPlayAgent`/`ICubeAgent` (the unified queried-player-frame
-  contract), `GameState` (`FromPosition`, `OpponentView`, `Snapshot`),
-  `MatchState.FromScores`, `GameSnapshot`/`MatchSnapshot`, `MatchRunner` +
-  `SeededDiceSource`, `AgentContractViolationException` (public ctors are the
-  adapter's forfeit hook), transcripts.
+- **BgDataTypes_Lib** — `Play`/`Move`, `BoardState.FromMop`,
+  `CubeAction`/`CubeOwner`.
+- **BgGame_Lib** — `IPlayAgent`/`ICubeAgent`, `GameState` (`FromPosition`,
+  `OpponentView`, `Snapshot`), `MatchState.FromScores`,
+  `GameSnapshot`/`MatchSnapshot`, `MatchRunner` + `SeededDiceSource`,
+  `AgentContractViolationException`, transcripts.
 - **BgMoveGen** — `MoveGenerator.GeneratePlays`: the server's legality
   universe (`PlayResolver`) and the reference bot's candidate set.
 - **BgInference** (test-only) — the dogfooding smoke's real engine
@@ -115,7 +113,7 @@ BgTournament/
 │   ├── AuditProjection.cs              journal → audit contract: the arbitration timeline walk
 │   ├── LiveMatch.cs                    per-match live cache + SSE broadcast (the IMatchObserver adapter)
 │   ├── CompositeMatchObserver.cs       fans the runner's callbacks to LiveMatch + MatchJournal
-│   └── Persistence/                    the durable records journal (Arc 9) + arbitration log (Arc 10)
+│   └── Persistence/                    the durable records journal + arbitration log
 │       ├── MatchJournalEvent.cs        match-journal DTO union ("type"-discriminated JSONL lines)
 │       ├── TournamentJournalEvent.cs   tournament-journal DTO union
 │       ├── ServerJournalEvent.cs       server-journal DTO union (engine lifecycle evidence)
@@ -155,6 +153,7 @@ BgTournament/
 └── BgTournament.Tests/
     ├── GoldenWireTests.cs              byte-for-byte wire pins, every message
     ├── ApiGoldenTests.cs               byte-for-byte admin JSON pins, every shape + enum
+    ├── ApiMappingTests.cs              record → summary projection fidelity (what a golden refresh would paper over)
     ├── ProtocolRoundTripTests.cs       strictness + tolerance edges
     ├── ProtocolDocTests.cs             PROTOCOL.md examples stay canonical wire text
     ├── WireMappingTests.cs             field preservation + the no-double-flip pin
@@ -170,8 +169,7 @@ BgTournament/
     ├── TournamentFairDiceTests.cs      unseeded tournament ⇒ per-match keys; seeded ⇒ none
     ├── TimeControlTests.cs             the validated value type + its JsonException funnel
     ├── MatchClockTests.cs              Fischer arithmetic, deterministic on a fake TimeProvider
-    ├── TimeControlWireTests.cs         clocks end to end: announcement, pools, flag fall, tournament
-    │                                   fold, SDK surfacing (hosted clock-aware agent, flat-regime honesty)
+    ├── TimeControlWireTests.cs         clocks end to end: announcement, pools, flag fall, tournament fold, SDK surfacing
     ├── ListEndpointTests.cs            /matches + /tournaments listings, creation order
     ├── ReplayProjectionTests.cs        the stamped-seat projection on scripted-dice MatchRunner runs
     ├── ReplayEndpointTests.cs          /matches/{id}/games over TestServer, 404/409/partial
@@ -183,17 +181,12 @@ BgTournament/
     ├── TournamentSmokeTests.cs         3-engine round-robin over the wire to a winner
     ├── JournalGoldenTests.cs           byte-for-byte journal-event pins, every event + enum (all three kinds)
     ├── JournalMappingTests.cs          substrate ↔ journal fidelity round trips (hits, frames, taxonomy)
-    ├── RehydrationTests.cs             restart identity, torn tail, corruption, fair-dice evidence,
-    │                                   v1 tolerance, evidence-ignored fold, unknown-version skip
-    ├── AuditEndpointTests.cs           /matches/{id}/audit: replay join, clock trail, fair packet,
-    │                                   deterministic drain gate, damage surfaces, late-reply hook pin
+    ├── RehydrationTests.cs             restart identity, torn tail/corruption, fair-dice evidence, version tolerance/skip
+    ├── AuditEndpointTests.cs           /matches/{id}/audit: replay join, clock trail, fair packet, drain gate, damage
     ├── ServerJournalTests.cs           segment per boot; connect/disconnect/reject/stopped evidence
-    ├── AdminAuthTests.cs               the admin identity gate: accept/reject both modes, actor
-    │                                   stamps (direct vs scheduled), refusal evidence, boot validation
-    ├── RosterEndpointTests.cs          registration lifecycle, actor stamps, no-plaintext-on-disk,
-    │                                   cross-segment rehydration, admin-gate composition
-    └── WireEnforcementTests.cs         Open/Registered × keyless/valid/unknown/mismatch/deactivated,
-                                        rotation kills old keys, SDK round-trip, rejection evidence
+    ├── AdminAuthTests.cs               admin identity gate: both modes, actor stamps, refusal evidence, boot validation
+    ├── RosterEndpointTests.cs          registration lifecycle, actor stamps, no-plaintext-on-disk, rehydration
+    └── WireEnforcementTests.cs         policy × key matrix, rotation kills old keys, SDK round-trip, rejection evidence
 ```
 
 ## Architecture
@@ -223,7 +216,7 @@ out-of-contract action fails at the deserialization boundary, not in game
 logic.
 
 **The frame rule.** The queried player always sees its own frame — in-proc
-and on the wire, one convention (the substrate re-contract this arc built on).
+and on the wire, one convention (a deliberate substrate-level re-contract).
 `WireMapping` is the only home of wire↔substrate field correspondences and is
 strictly frame-preserving: `GameState.OpponentView` (substrate-side) is the
 single re-expression anywhere in the system, and the no-double-flip pin fails
@@ -268,35 +261,28 @@ end silently on the wire — v1 has no vocabulary for them and never lies about
 a reason.
 
 **Provably-fair dice (commit-and-reveal).** Unseeded matches run on
-verifiable dice (BgGame_Lib's `VerifiableDiceSource`): the server generates a
-per-match `DiceKey`, publishes `key.Commit("bg-tournament:match:<matchId>")`
-on `matchStarted` (with the `hmac-sha256-dice-v1` algorithm id) before the
-first roll, and reveals the key on `matchEnded`, so either player re-derives
-every roll and confirms the dice were fixed in advance and never adapted.
-**Fair mode is the default** — omitting the `POST /matches` seed selects it;
-an explicit seed keeps the reproducible, uncommitted `SeededDiceSource`
-(dev/repro), which sends none of the fair fields. All additions are
-**additive under PROTOCOL.md §2's ignore-unknown-fields rule — the protocol
-stays v1** (an unaware engine ignores them and plays identically). The
-algorithm id and context format are single-sourced in `Protocol/VerifiableDice`
-so producer, verifier, and goldens speak one string. Each `playQuery` also
-carries a `rollIndex` (fair mode only) — the roll's 0-based stream position,
-sourced from a `CountingDiceSource` wrapping the real source — so an engine
-places each observed roll (a gapped subsequence: it never sees opponent turns,
-dances, or opening re-rolls) at its true position. Verification is split
-SSOT-style: the server produces; a **pure** `DiceVerification.VerifyMatchDice`
-(in EngineClient, callable by any C# client) checks commitment + each observed
-roll and returns an immutable report; `EngineClient`'s optional
-`onDiceVerified` hook auto-records observations and delivers the report,
-never throwing on failure (the cheating-server policy is the consumer's).
-**What it proves:** non-adaptivity (the whole stream is fixed before roll one)
-and observed-roll integrity. **What it doesn't:** non-selection — server-only
-entropy can't rule out a cherry-picked committed sequence; contributory nonces
-(engine participation → protocol v2) are the recorded upgrade path. Rolls no
-engine saw are auditable from the retained transcript, not the wire. Unseeded
-**tournaments** run each scheduled match on its own generated key; the
-scheduled seed stays structural (schedule shape) in every mode and is not the
-fair-mode dice driver. Seeded tournaments keep the SplitMix64 derivation.
+verifiable dice (BgGame_Lib's `VerifiableDiceSource`): the server commits to
+a per-match `DiceKey` on `matchStarted` before the first roll and reveals it
+on `matchEnded` — the algorithm, commit-context format, roll indexing, and
+what the scheme proves and doesn't (non-adaptivity yes, non-selection no;
+contributory nonces are the recorded protocol-v2 upgrade path) are all
+PROTOCOL.md §8's. **Fair mode is the default** — omitting the `POST /matches`
+seed selects it; an explicit seed keeps the reproducible, uncommitted
+`SeededDiceSource` (dev/repro), which sends none of the fair fields. All the
+fair fields are **additive under §2's ignore-unknown-fields rule — the
+protocol stays v1**. The algorithm id and context format are single-sourced
+in `Protocol/VerifiableDice` so producer, verifier, and goldens speak one
+string. The fair-mode `playQuery.rollIndex` is sourced from a
+`CountingDiceSource` wrapping the real source (§8.2 defines the indexing).
+Verification is split SSOT-style: the server produces; a **pure**
+`DiceVerification.VerifyMatchDice` (in EngineClient, callable by any C#
+client) checks commitment + each observed roll and returns an immutable
+report; `EngineClient`'s optional `onDiceVerified` hook auto-records
+observations and delivers the report, never throwing on failure (the
+cheating-server policy is the consumer's). Unseeded **tournaments** run each
+scheduled match on its own generated key; the scheduled seed stays structural
+(schedule shape) in every mode and is not the fair-mode dice driver. Seeded
+tournaments keep the SplitMix64 derivation.
 
 **Time controls (Fischer clocks).** `POST /matches`/`/tournaments` may carry
 a `timeControl` — `BgTournament.Api.TimeControl`, a constructor-validated
@@ -304,24 +290,21 @@ immutable value (initial pool + per-decision increment, in seconds; TimeSpan
 views; a dedicated JSON converter folds constructor rejections into
 `JsonException`, so an invalid control hits the host's standard 400 funnel
 like any other malformed field instead of a binding 500). With one, the match
-runs on a per-match `MatchClock`: per-seat pools debited by the wall time the
-server measures around each decision query and credited the increment per
-answered decision — latency deliberately on the player's clock (the only
-server-authoritative measurement; PROTOCOL.md §10 says so honestly). The
+runs on a per-match `MatchClock` implementing PROTOCOL.md §10's Fischer
+semantics — the debit/credit arithmetic, the latency-on-the-player's-clock
+ruling, and the wire shape (the `matchStarted` announcement and the per-query
+pool fields, additive v1 by the fair-dice precedent) are all §10's. The
 control **replaces** the flat `DecisionTimeoutSeconds` guard for that match:
 the remaining pool is the only per-decision limit, enforced by a flag
 `CancellationTokenSource` armed with the pool, so an emptied pool cancels the
 in-flight query and surfaces as `EngineFlagFallException` — the fourth
 forfeit cause, folded by `MatchService.RecordForfeit` like the others. Clock
 logic reads time exclusively through the DI `TimeProvider` (never ambient),
-which makes every clock test deterministic and pre-stages the timestamp
-source a future arbitration log will reuse. On the wire it is all additive v1
-(the fair-dice precedent): `matchStarted.timeControl` announces the control
-so engines budget the match, and every query carries both pools
-(`yourTimeRemainingSeconds`/`opponentTimeRemainingSeconds`, stamped at query
-issuance, frame-rule naming). The SDK surfaces the clock to hosted agents
-that opt in — `IClockAwarePlayAgent`/`IClockAwareCubeAgent`, detected by type
-per role with no constructor change: the control is announced once per match,
+which makes every clock test deterministic and single-sources the timestamp
+stream the arbitration log's clock evidence reuses. The SDK surfaces the
+clock to hosted agents that opt in —
+`IClockAwarePlayAgent`/`IClockAwareCubeAgent`, detected by type per role
+with no constructor change: the control is announced once per match,
 always and nullable (`OnTimeControlAnnounced(null)` affirmatively means
 unclocked — the flat regime's timeout is server config the wire cannot tell
 the agent), and each clocked decision arrives with a `ClockReading` of both
@@ -370,7 +353,7 @@ pin the protocol. Listings (`GET /matches`, `GET /tournaments`) serve
 creation order via a never-serialized monotonic `Sequence` on each record —
 the concurrent dictionaries have no order of their own.
 
-**Admin identity (API keys + tier-C actor journaling).** The admin surface
+**Admin identity (API keys + actor journaling).** The admin surface
 has identity: config-defined named API keys (`Admin:ApiKeys`, actor
 name → key value, plaintext by the `Persistence:DataDirectory` trust-domain
 precedent), presented per request in the `X-Api-Key` header —
@@ -389,9 +372,9 @@ fixed-time (`CryptographicOperations.FixedTimeEquals`). The authenticated
 actor (the key's *name*, never the key) rides the request as an `AdminActor`
 feature, and the create endpoints stamp it into the durable record: the
 match/tournament `created` journal headers gain an optional `createdBy` —
-the Arc 10-deferred tier-C admin-action journaling, enriching the existing
-headers rather than adding a parallel event family. Deliberately *not* a
-schema bump: the field's absence means exactly "no authenticated actor",
+admin-action journaling enriching the existing headers rather than adding a
+parallel event family. Deliberately *not* a schema bump: the field's
+absence means exactly "no authenticated actor",
 which is retroactively true of every pre-existing file (anonymous surface),
 of anonymous creations, and of tournament-scheduled matches — those carry no
 actor of their own; the tournament header's actor plus the `matchStarted`
@@ -421,8 +404,8 @@ field is the migration path. **Roster-as-journal:** the roster's state is the
 startup fold of an append-only registration history — `JournalKind.Roster`,
 one *segment per roster-mutating boot* (the server-journal idiom; created
 lazily, so idle boots write nothing), events `registered` / `attestation` /
-`credentialRotated` / `deactivated`, each stamped with the acting admin (the
-tier-C extension). Per-boot segments — not one long-lived reopened file — keep
+`credentialRotated` / `deactivated`, each stamped with the acting admin.
+Per-boot segments — not one long-lived reopened file — keep
 `IJournalStore`'s create-once contract *and* the damage policy intact: a
 write-once file's torn tail is always a true tail, whereas reopen-and-append
 would turn one boot's torn tail into the next boot's mid-file corruption.
@@ -438,7 +421,7 @@ carries a plaintext key. **Wire enforcement:** hello gains an optional
 v1, and a keyless hello is byte-identical to before), and
 `Tournament:EnginePolicy` picks `Open` (default: anyone connects, the
 dev/smoke mode BgArena's in-proc boot relies on) or `Registered` (roster
-identities only). The session-1 shape repeats one gate over: a *presented* key
+identities only). The admin-key shape repeats one gate over: a *presented* key
 is always validated whichever the policy — unknown, rotated-away, and
 deactivated keys are rejected loudly, never silently served unattributed — and
 the key resolves the roster entry whose name the hello's `engineName` must
@@ -494,8 +477,9 @@ single projection SSOT feeds both surfaces — under a small envelope union
 (`LiveMatchEvent`). A game's frame-free start context (seat-absolute entering
 scores + the Crawford flag) rides `OnGameStarted`'s `GameStartContext` straight
 from the substrate onto `gameStarted` and the current-game `snapshot`; the feed
-holds those values verbatim rather than re-folding a score tally of its own, so
-a live Crawford game renders as Crawford (it previously did not). The one terminal event is emitted by the host
+holds those values verbatim rather than re-folding a score tally of its own,
+so a live Crawford game renders as Crawford. The one terminal event is
+emitted by the host
 (`MatchService`, after the outcome is folded into the record), not the
 substrate — which emits nothing on abort — so it fires once for every outcome
 (completed / forfeited / aborted / faulted) and carries the truth. The
@@ -523,7 +507,7 @@ as replay: a running match answers 409 pointed at `/live`.
 
 **Durable records (the journal).** Records survive restarts via an
 append-only, schema-versioned JSONL journal per match and per tournament under
-`Persistence:DataDirectory` — designed as an *ordered audit record* (the Arc 10
+`Persistence:DataDirectory` — designed as an *ordered audit record* (the
 arbitration log reads this vocabulary), not a cache-warming format. Every event
 carries an `at` timestamp from the DI `TimeProvider`; the first line is always
 the `created` header (identity, configuration, `schemaVersion`, and — fair
@@ -559,14 +543,14 @@ ordinal-id tiebreak. Tournament resume-after-restart is deliberately not
 implemented (the journaled results enable it later); an interrupted
 tournament's finished matches remain fully served records.
 
-**Arbitration log (the journal as evidence, and its read surface).** Arc 10
-extends the Arc 9 journal into the arbitration record. Match journals (schema
-v2; v1 files fold forever) gain two evidence-only event types the fold
+**Arbitration log (the journal as evidence, and its read surface).** The
+durable journal doubles as the arbitration record. Match journals (schema
+v2; v1 files fold forever) carry two evidence-only event types the fold
 ignores: `clock` — one per settled clocked decision, written from
 `MatchClock`'s settlement callback (seat, decision kind, measured think,
 increment credited, pool before/after; the clock stays the one measurement
 SSOT, flat-regime matches measure nothing) — and `lateReply`, raised by
-`EngineConnection.LateReplyDiscarded` when the benign §8 race discards a
+`EngineConnection.LateReplyDiscarded` when the benign §9 race discards a
 reply to an abandoned query (proof the engine answered, too late to count).
 Ordering is part of the vocabulary: a clock event precedes the entry it
 timed; a `cubeOffer` clock event with no cube entry was a declined double
@@ -576,9 +560,9 @@ queried). A new **server journal** (`server/<id>.jsonl`, one segment per
 boot, independently versioned) records engine lifecycle — `started` header,
 `engineConnected`/`engineDisconnected`, `handshakeRejected` with the exact
 wire reason (one funnel in `EngineSocketEndpoint`), and a graceful `stopped`
-marker whose absence is crash evidence — plus, since Arc 12, `adminRejected`
-refusal evidence (see "Admin identity"; `ServerSchemaVersion` 2). It is deliberately **evidence-only**:
-sessions are ephemeral, nothing rehydrates from it. The read surface is
+marker whose absence is crash evidence — plus `adminRejected` refusal
+evidence (see "Admin identity"; `ServerSchemaVersion` 2). It is deliberately
+**evidence-only**: sessions are ephemeral, nothing rehydrates from it. The read surface is
 `GET /matches/{matchId}/audit` — new `BgTournament.Api` audit DTOs (the
 fourth event family) projected by `AuditProjection` over the journal's
 trusted prefix (`JournalReader`, the parse-policy SSOT shared with
@@ -700,16 +684,16 @@ public sealed class EngineClient
 }
 
 // SDK clock surfacing (PROTOCOL.md §10) — opt-in, detected by type per role;
-// plain agents are served unchanged and the ctor stays as-is. The regime is
-// said by shape, never by sentinel: the announcement always fires (null =
-// affirmatively unclocked), ClockReadings exist only in clocked matches.
+// plain agents are served unchanged and the ctor stays as-is (see "Time
+// controls" in Architecture for the regime-by-shape contract).
 public sealed record MatchTimeControl(TimeSpan Initial, TimeSpan Increment);
 public sealed record ClockReading(TimeSpan YourTimeRemaining, TimeSpan OpponentTimeRemaining);
     // stamped at query issuance — the pending decision's own cost is not yet debited
 public interface IClockAwareAgent
 {
     void OnTimeControlAnnounced(MatchTimeControl? timeControl);  // once per match, before any decision;
-                                                                 // a dual-role object hears it once
+                                                                 // null = unclocked; a dual-role
+                                                                 // object hears it once
 }
 public interface IClockAwarePlayAgent : IPlayAgent, IClockAwareAgent
 {
@@ -865,7 +849,7 @@ public sealed record AuditGameEndedEvent(..., Seat Winner, ...);            // "
 public sealed record AuditClockEvent(..., Seat Seat, DecisionKind Decision, // "clock" — per settled
     double ThinkSeconds, bool IncrementCredited,                            //   clocked decision;
     double RemainingBeforeSeconds, double RemainingAfterSeconds);           //   precedes its entry
-public sealed record AuditLateReplyEvent(..., Seat Seat, string RequestId); // "lateReply" (the §8 race)
+public sealed record AuditLateReplyEvent(..., Seat Seat, string RequestId); // "lateReply" (the §9 race)
 public sealed record AuditTerminalEvent(..., MatchStatus Status,            // "terminal" — record-derived;
     ForfeitCause? ForfeitCause, ..., string? DiceKey);                      //   fair mode reveals the key
 
@@ -922,13 +906,11 @@ public sealed record AuditTerminalEvent(..., MatchStatus Status,            // "
   hard to hit; don't add parallel serialization paths.
 - **`ToUnresolvedPlay` output must never be applied to a board.** It carries
   no hit encoding, so applying its moves verbatim would leave a hit blot
-  standing. `PlayResolver` is the sole sanctioned consumer: it matches by the
-  wire-level hop projection (hit-insensitive, route-sensitive — see "Play
-  encoding") and returns the generator's hit-encoded candidate, which is what
-  gets applied and recorded. The unmatched fallback is safe end to end
-  because the substrate's `ApplyPlay` is canonicalize-then-apply and rejects
-  (throw-before-mutate) any play that is not canonically legal — a hit-less
-  encoding of a hitting play now forfeits instead of corrupting the board.
+  standing. `PlayResolver` is the sole sanctioned consumer (see "Play
+  encoding and canonicalization"), and the unmatched fallback stays safe
+  because the substrate's `ApplyPlay` rejects throw-before-mutate — a
+  hit-less encoding of a hitting play forfeits instead of corrupting the
+  board.
 - **No flips in `WireMapping`, ever.** The substrate's `OpponentView` is the
   system's only re-expression; a flip in the mapping double-applies the frame
   rule. The pin: `ToWireState_OfOpponentView_IsTheResponderFrame_NoDoubleFlip`.
@@ -946,7 +928,7 @@ public sealed record AuditTerminalEvent(..., MatchStatus Status,            // "
   registry busy flag) and `MatchRunner` is sequential.
 - **Forfeit `matchEnded` reports 0–0** — partial scores are lost when the
   runner throws (no observer hook yet; umbrella-tracked). Aborted/Faulted
-  matches end silently: v1 wire has no vocabulary for them (PROTOCOL.md §10).
+  matches end silently: v1 wire has no vocabulary for them (PROTOCOL.md §11).
 - **In wire tests, await the client connect in the test body.** A
   fire-and-forget connect inside a background task swallows the real failure
   and surfaces as an unrelated registration timeout.
@@ -961,10 +943,9 @@ public sealed record AuditTerminalEvent(..., MatchStatus Status,            // "
   type is why the bot and its tests alias it (`EngineClientSdk` / `Bot`).
 - **`EngineConnection.CloseAsync` is a half-close on purpose.** It sends the
   close frame (`CloseOutputAsync`) without waiting for the peer's ack — a
-  misbehaving engine may never send one, and `WebSocket.CloseAsync` would hang
-  the match run's `finally` forever (latent in Arc 2 when nothing awaited the
-  run; the tournament loop awaits it). Don't "upgrade" it back to a full
-  handshake.
+  misbehaving engine may never send one, and `WebSocket.CloseAsync` would
+  hang the match run's `finally` forever (which the tournament loop awaits).
+  Don't "upgrade" it back to a full handshake.
 - **A send failure is a disconnect, by translation.** `EngineConnection.SendAsync`
   converts transport-level send errors into `EngineDisconnectedException` so a
   closing-but-not-yet-observed connection forfeits cleanly instead of faulting
@@ -981,88 +962,77 @@ public sealed record AuditTerminalEvent(..., MatchStatus Status,            // "
   derivation change re-folds every stored tournament differently even though no
   JSON byte moved. Treat such a change as schema-relevant: it needs the same
   conscious versioning/migration thought as a journal shape change.
-- **Omitting the seed now means fair mode, not a random seeded match.** `POST
-  /matches`/`/tournaments` with no seed selects verifiable dice (commitment on
-  `matchStarted`, reveal on `matchEnded`); only an explicit seed keeps
-  `SeededDiceSource`. Any test that wants deterministic dice must pass a seed.
+- **Omitting the seed means fair mode, not a random seeded match** (see
+  "Provably-fair dice") — any test that wants deterministic dice must pass
+  an explicit seed.
 - **`rollIndex` leans on the runner's roll-then-query sequencing.**
   `CountingDiceSource` counts `Roll()` calls; `RemoteEngineAgent` stamps
   `rollIndex = RollsProduced - 1`, correct only because `MatchRunner` takes
-  exactly one roll immediately before each play query. Cube offers/responses
-  take no roll; a dance takes one but sends no query; opening ties each take
-  one. The fair-mode smoke re-derives the whole stream against the transcript,
-  so a sequencing regression fails loudly. Don't stamp the index anywhere but at
-  play-query time.
-- **The fair-mode `Seed` is structural, not dead code.** In fair mode
-  `MatchRecord.Seed` (and `TournamentMatchEntry.Seed`) is still recorded — the
-  admin `MatchSummary.Seed` stays `int`, so the Api surface is unchanged — but
-  the committed `DiceKey` drives and reproduces the dice, not the seed. The
-  tournament seed always governs schedule *structure*; it drives dice only in
-  seeded mode.
-- **Fair-dice fields are additive v1.** New wire fields ride the ignore-unknown
-  policy (PROTOCOL.md §2); the version stays 1. The algorithm id and commit
-  context are the frozen public contract — `Protocol/VerifiableDice` is their one
-  home; a change breaks every external verifier and the session-1 vectors.
+  exactly one roll immediately before each play query (§8.2 defines which
+  events consume indices). The fair-mode smoke re-derives the whole stream
+  against the transcript, so a sequencing regression fails loudly. Don't
+  stamp the index anywhere but at play-query time.
+- **The fair-mode `Seed` is structural, not dead code.** `MatchRecord.Seed`
+  (and `TournamentMatchEntry.Seed`) is still recorded and `MatchSummary.Seed`
+  stays `int` — the Api surface is unchanged — but in fair mode the committed
+  `DiceKey` drives and reproduces the dice; the seed governs schedule
+  *structure* only (see "Provably-fair dice").
+- **The fair-dice algorithm id and commit context are frozen public
+  contract.** `Protocol/VerifiableDice` is their one home; a change breaks
+  every external verifier and the published cross-language vectors (§8.3).
   `DiceCommitment.Verifies` and the context string must match byte-for-byte
   across producer and verifier or verification silently fails.
 - **A time control replaces the flat guard — don't reintroduce it.** Under a
-  `MatchClock` the remaining pool is the only per-decision limit (PROTOCOL.md
-  §10: a large pool must be spendable on one long think). `DecisionTimeoutSeconds`
-  applies solely to clock-less matches; adding a second `CancelAfter` to the
-  clocked bracket would silently change match outcomes.
+  `MatchClock` the remaining pool is the only per-decision limit (§10.2: a
+  large pool must be spendable on one long think); `DecisionTimeoutSeconds`
+  applies solely to clock-less matches, and adding a second `CancelAfter` to
+  the clocked bracket would silently change match outcomes.
 - **No ambient time in clock logic.** `MatchClock` — and anything that joins
   it — reads time exclusively through the injected `TimeProvider`
   (`GetTimestamp`/`GetElapsedTime`, and the flag CTS's TimeProvider
   constructor). A `DateTime.UtcNow` or `Stopwatch` would break clock-test
-  determinism and fork the timestamp source a future arbitration log reuses.
+  determinism and fork the timestamp source the arbitration log's clock
+  evidence reuses.
 - **Only answered decisions earn the increment, settled exactly once.**
   `MatchClock.Decision` debits measured time on dispose (idempotent) and
   credits the increment only if `MarkAnswered()` ran first — a flag fall,
   violation, disconnect, or external cancellation debits without credit. Keep
   `MarkAnswered` after the exchange returns, never before.
-- **The flat regime has no pools — the SDK says so by shape.** A clock-aware
-  agent hears `OnTimeControlAnnounced(null)` (the announcement always fires)
-  and then no `ClockReading` at all: the plain choose methods carry every
-  flat-regime decision. Never fabricate a reading or a sentinel (no
+- **The flat regime has no pools — the SDK says so by shape** (see "Time
+  controls"). Never fabricate a `ClockReading` or a sentinel (no
   infinite/zero/negative pools an agent might arithmetic on), and don't "fix"
   the announcement to fire only when clocked — its null is the affirmative
-  unclocked signal, and the flat per-decision timeout is server-side config
-  the wire cannot tell the agent. A query carrying only one of the two pool
-  fields is out of contract and deliberately treated as unclocked
-  (`EngineClient.ClockOf`) — half a clock is never invented.
+  unclocked signal. A query carrying only one of the two pool fields is out
+  of contract and deliberately treated as unclocked (`EngineClient.ClockOf`)
+  — half a clock is never invented.
 - **Clock-awareness is detected per role object; the announcement dedupes by
   reference.** `EngineClient` type-tests the play and cube agents separately
   (one can be aware while the other stays plain — the hosted-SDK wire test
   pins the mixed case), and one object serving both roles hears each match's
   announcement exactly once (`ReferenceEquals` in `AnnounceTimeControl`).
 - **A `ClockReading` is a stamp, not a live clock.** Pools are stamped at
-  query issuance: the pending decision's own thinking time is not yet
-  debited, and the network round trip lands on the queried player's clock
-  (PROTOCOL.md §10). An agent budgeting to the reading's exact edge will flag
-  on latency; the SDK deliberately does not "correct" for any of this.
+  query issuance and latency lands on the queried player's clock (§10.2): an
+  agent budgeting to the reading's exact edge will flag, and the SDK
+  deliberately does not "correct" for any of this.
 - **A tournament binds the sessions present at start.** A participant that
   disconnects — or is kicked by a forfeit close — forfeits its remaining
   matches without play, even if it reconnects under the same name. Both sides
   gone halts the tournament as Faulted (a match can be forfeited to no one).
 - **Attribution is the substrate's, read not re-derived.** `ReplayProjection`
-  reads each entry's stamped `OnRollSeat` and the subtype-owned attribution
-  (`CubeTranscriptEntry.ActingSeat`, `GameEndedTranscriptEntry.Winner`) — it
-  runs no sequencing heuristic. Don't reintroduce one (opening-die winner,
-  flip-per-play, cube-no-flip): those rules now live on the entry types, and a
-  local copy would be a second source of truth. The flip normalization must
-  stay a `GameState.OpponentView` round-trip: a local mirror would be the
-  system's second re-expression. `ProjectEntry`/`ProjectGame` are the single
-  projection SSOT — the live feed reuses them, so a change is felt on both
-  surfaces at once.
+  reads the stamped facts (see "Replay shape") — don't reintroduce a
+  sequencing heuristic (opening-die winner, flip-per-play, cube-no-flip):
+  those rules live on the entry types, and a local copy would be a second
+  source of truth. The flip must stay a `GameState.OpponentView` round-trip
+  (a local mirror would be the system's second re-expression), and
+  `ProjectEntry`/`ProjectGame` are the single projection SSOT the live feed
+  reuses — a change is felt on both surfaces at once.
 - **The live-feed observer adapter must stay non-throwing and non-blocking.**
-  `LiveMatch`'s `IMatchObserver` callbacks run synchronously on the match loop,
-  and the substrate kills the run if one throws. Keep every callback to fast
-  in-memory work under the short lock plus non-blocking channel writes — never
-  await, do I/O, or take a contended lock in a callback, and never let one
-  throw uncontained (the `SafelyObserve` wrapper logs and faults the feed
-  loudly instead). The terminal event is emitted by `MatchService`
-  (`MarkTerminal`, after the record is folded), never from the observer — an
-  aborted run gets no substrate callback at all.
+  Callbacks run synchronously on the match loop and the substrate kills the
+  run if one throws (see "Live feed shape") — never await, do I/O, take a
+  contended lock, or throw uncontained in one (`SafelyObserve` logs and
+  faults the feed loudly instead). The terminal event is
+  `MatchService.MarkTerminal`'s alone, never the observer's — an aborted run
+  gets no substrate callback at all.
 - **The admin JSON is pinned byte-for-byte, wire-style.** `ApiGoldenTests`
   is the alarm: a shape or enum-string drift in `BgTournament.Api` is a
   contract change for BgArena_Blazor. Note the Web-default encoder escapes
@@ -1074,21 +1044,20 @@ public sealed record AuditTerminalEvent(..., MatchStatus Status,            // "
   range — old files fold forever — and skips unknown versions loudly. A **new
   event type is a schema change here**, not a wire-style additive field: the
   codec is deliberately strict, so an unknown discriminator under an old
-  stamp reads as corruption to an old reader (that is why the Arc 10 evidence
-  events came with the v1→v2 bump; the wire's additive-under-v1 precedent
-  does not transfer). The server journal versions independently
+  stamp reads as corruption to an old reader (the clock/lateReply evidence
+  events are why match schema v2 exists; the wire's additive-under-v1
+  precedent does not transfer). The server journal versions independently
   (`ServerSchemaVersion`) — the kinds are separate durable formats. Journal
   DTOs use journal-local enums, never the Api or substrate ones: an Api
-  rename must never silently rewrite the durable format. Serialize only
-  through `JournalCodec` (same discriminator footgun as `WireProtocol`), map
-  only through `JournalMapping`, parse files only through `JournalReader`
-  (the one torn-tail/corruption policy, shared by rehydration and audit).
-- **Journal observer callbacks obey the live-feed rule.** `MatchJournal`'s
-  `IMatchObserver` callbacks run synchronously on the match loop: fast
-  in-memory mapping + a non-blocking channel write, never awaiting, doing I/O,
-  or throwing uncontained. Disk work happens only on the `JournalWriter` pump;
-  a journal failure logs loudly and stops journaling — the match must play on,
-  and the record must never wait on disk.
+  rename must never silently rewrite the durable format. Serialize, map, and
+  parse only through `JournalCodec` (same discriminator footgun as
+  `WireProtocol`) / `JournalMapping` / `JournalReader` (the one parse
+  policy, shared by rehydration and audit).
+- **Journal observer callbacks obey the live-feed rule** (fast in-memory
+  mapping + a non-blocking channel write, nothing else). Disk work happens
+  only on the `JournalWriter` pump; a journal failure logs loudly and stops
+  journaling — the match must play on, and the record must never wait on
+  disk.
 - **Journal moves keep the hit signs the wire strips.** `JournalMapping`
   serializes `Play` moves with the raw sign-encoded destinations (negative =
   hit, 0 = bear-off) so rehydration rebuilds the exact substrate `Play`.
@@ -1096,11 +1065,10 @@ public sealed record AuditTerminalEvent(..., MatchStatus Status,            // "
   stored transcript — the rebuilt plays would no longer even equal the played
   ones (canonical `Play` equality is hit-sensitive), and the audit record
   would lie.
-- **The damage policy is tail-lenient, prefix-strict.** Only a journal's
-  *final* unparseable line is a torn tail (crash mid-append) and dropped with a
-  warning; a failure on any earlier line is corruption — the fold stops there
-  and serves the trusted prefix as Interrupted with a corruption-naming detail.
-  Never trust events past a corrupt line, even a well-formed terminal.
+- **The damage policy is tail-lenient, prefix-strict** (see "Durable
+  records"): only a journal's *final* unparseable line is a torn tail;
+  anything earlier is corruption and the fold stops there. Never trust
+  events past a corrupt line, even a well-formed terminal.
 - **Interrupted is rehydration's word alone.** No code path ever *writes* an
   interrupted terminal event — the status is precisely "the journal has no
   trusted terminal line". A shutdown race can therefore demote Aborted to
@@ -1111,105 +1079,86 @@ public sealed record AuditTerminalEvent(..., MatchStatus Status,            // "
   terminal, `MarkTerminal`'d, and journal-less (`Journal` null — the file on
   disk already is their complete history). Nothing may rehydrate to Running,
   and nothing may append to a rehydrated journal.
-- **Clock evidence events obey an ordering vocabulary — and only clocked
-  matches have them.** A `clock` event is journaled at settlement, *before*
-  the runner records the resulting transcript entry; audit readers rely on
-  the three corollaries (declined double window = `cubeOffer` clock with no
-  cube entry; trailing clock = the fatal decision; dance = play entry with no
-  clock event, the engine was never queried). Don't journal the settlement
-  anywhere but the `MatchClock` callback (the one measurement SSOT), and
-  don't invent flat-regime timing — the flat regime measures nothing.
-- **The server journal is evidence-only — never rehydrate it.** Sessions are
-  ephemeral; the registry is live state alone. One segment per boot keeps the
-  store's create-once contract; the `stopped` marker's *absence* is the crash
-  evidence, so never write it anywhere but graceful shutdown.
+- **Clock evidence events obey the ordering vocabulary — and only clocked
+  matches have them.** Audit readers rely on the settlement-before-entry
+  ordering and its corollaries (see "Arbitration log"). Don't journal the
+  settlement anywhere but the `MatchClock` callback (the one measurement
+  SSOT), and don't invent flat-regime timing — the flat regime measures
+  nothing.
+- **The server journal is evidence-only — never rehydrate it** (see
+  "Arbitration log"; the registry is live state alone). The `stopped`
+  marker's *absence* is the crash evidence, so never write it anywhere but
+  graceful shutdown.
 - **The terminal audit event is record-derived; the audit read waits on
-  `JournalSettled`.** `AuditProjection` skips the journal's terminal line and
-  closes the timeline from the `MatchRecord` (identical for a folded
-  terminal; the only truthful close for Interrupted, which also revealed the
-  escrowed key there). Don't re-read the terminal from the file — and don't
-  remove the endpoint's `await record.JournalSettled`: a match turns terminal
-  before its journal drains, and without the gate an immediate read serves a
-  short file. `MarkJournalSettled` completes **unconditionally** on every
-  finalize path — a gate left pending turns a millisecond race into a hung
-  request, strictly worse than the short read it prevents.
+  `JournalSettled`** (see "Arbitration log"). Don't re-read the terminal
+  from the file — and don't remove the endpoint's
+  `await record.JournalSettled`: a match turns terminal before its journal
+  drains, and without the gate an immediate read serves a short file.
+  `MarkJournalSettled` completes **unconditionally** on every finalize path —
+  a gate left pending turns a millisecond race into a hung request, strictly
+  worse than the short read it prevents.
 - **The derived dice commitment must stay derived.** The audit `created`
   event's commitment comes from `MatchRecord.Commitment` (the same
   `DiceKey.Commit` + context path `matchStarted` used) — never store it in
   the journal or derive it a second way; the no-drift pin is the wire↔audit
   byte equality in `AuditEndpointTests`.
-- **The admin gate's open mode is fail-loud, not fail-silent.** No configured
-  keys = anonymous service (a deliberate default — it keeps dev/smoke and
-  BgArena's in-proc boot working — announced by a startup warning), but a
-  *presented* key is always validated: an unknown key 401s even in open mode,
-  so a client configured with a key against a server that lost its own breaks
-  visibly instead of silently working unattributed. Don't "fix" that 401 into
+- **The admin gate's open mode is fail-loud, not fail-silent.** A *presented*
+  key is always validated — an unknown key 401s even on an anonymously
+  serving server (see "Admin identity"). Don't "fix" that 401 into
   tolerance, and don't add a separate enforce flag — key presence *is* the
   switch, which is what makes an enforce-without-keys misconfiguration
   unrepresentable.
 - **`createdBy` is additive under the existing schema versions on purpose.**
-  Its absence means exactly "no authenticated actor" — retroactively true of
-  every pre-Arc-12 file, of anonymous creations, and of tournament-scheduled
-  matches — so old files stay truthful with no bump. That is the governing
-  test for future fields: an optional field whose absence keeps meaning the
-  truth for already-written files may ride the current version; anything else
-  bumps (a new *event type* always does — the server journal's
-  `adminRejected` took `ServerSchemaVersion` to 2).
-- **Scheduled matches deliberately carry no `createdBy`.** The field's
-  semantic is "the actor of the direct authenticated request"; a tournament's
-  scheduled matches are created by orchestration, and their accountability is
-  the tournament header's actor joined through the `matchStarted` linkage.
-  Propagating the name onto each match header would fabricate N direct
-  requests that never happened — and duplicate one recorded decision.
-- **Never journal (or log) a presented key value.** Refusal evidence records
-  the reason, method, and path only — a mistyped *real* secret must not land
-  in a durable file, and the actor stamp is always the key's name. The same
-  rule covers engine keys: the roster journal holds salted hashes only, wire
-  rejections never echo the presented key, and the plaintext exists exactly
-  once, in the `EngineKeyGrant` response.
-- **Roster segments are write-once — never add reopen-and-append.** The
-  roster outlives boots, but the damage policy (tail-lenient, prefix-strict)
-  assumes write-once files: reopening a segment whose last boot died
-  mid-append would put new events *after* a torn line, which the reader
-  correctly treats as mid-file corruption and refuses to trust — the roster
-  would silently lose everything appended after the tear. One segment per
-  mutating boot keeps every file's torn tail a true tail and keeps
-  `IJournalStore` create-once. The fold across segments is ordered by segment
-  header time (ordinal-id tiebreak), and roster events carry whole state, so
-  a corrupt segment's dropped suffix leaves stale-but-honest entries the
-  admin repairs by rotation — never a poisoned roster.
+  Its absence keeps meaning "no authenticated actor" for every already-
+  written file (see "Admin identity"). That is the governing test for future
+  fields: an optional field whose absence keeps meaning the truth for
+  already-written files may ride the current version; anything else bumps —
+  and a new *event type* always does (the server journal's `adminRejected`
+  took `ServerSchemaVersion` to 2).
+- **Scheduled matches deliberately carry no `createdBy`** — their chain of
+  custody is the tournament header's actor joined through the `matchStarted`
+  linkage (see "Admin identity"). Propagating the name onto each match
+  header would fabricate N direct requests that never happened — and
+  duplicate one recorded decision.
+- **Never journal (or log) a presented key value — admin or engine.** Refusal
+  evidence records the reason, method, and path only (a mistyped *real*
+  secret must not land in a durable file), the actor stamp is always the
+  key's name, wire rejections never echo the presented `engineKey`, and the
+  plaintext engine key exists exactly once, in the `EngineKeyGrant` response.
+- **Roster segments are write-once — never add reopen-and-append.** Reopening
+  a segment whose last boot died mid-append would put new events *after* a
+  torn line, which the reader treats as mid-file corruption — the roster
+  would silently lose everything appended after the tear (see
+  "Registration/originality" for the per-boot-segment design). The fold
+  across segments is ordered by segment header time (ordinal-id tiebreak),
+  and roster events carry whole state, so a corrupt segment's dropped suffix
+  leaves stale-but-honest entries the admin repairs by rotation — never a
+  poisoned roster.
 - **`RosterJournal` is synchronous and throwing on purpose.** The
-  channel-and-pump `JournalWriter` discipline (never block, never throw,
-  drop on failure) exists for observer callbacks on the match loop; roster
-  mutations are admin-paced and their durability is load-bearing — the
-  show-once key must be on disk (as a hash) *before* the response reveals
-  it. Don't "fix" the roster onto `JournalWriter`: a dropped registration
-  event with an issued key is an engine that can never authenticate.
+  `JournalWriter` discipline exists for observer callbacks on the match
+  loop; roster mutations are admin-paced and their durability is
+  load-bearing (see "Registration/originality"). Don't "fix" the roster onto
+  `JournalWriter`: a dropped registration event with an issued key is an
+  engine that can never authenticate.
 - **Runtime mutations and the startup fold share `RosterService.Apply`.** The
-  event transitions live once; a mutation journals its event and then applies
-  it through the same path rehydration uses, which is what guarantees a
-  restart cannot re-fold a different roster. Don't mutate entry state
-  anywhere but `Apply`.
-- **The credential scheme is deliberately unstretched.** Engine keys are
-  256-bit CSPRNG values, so salted SHA-256 is the right cost: PBKDF2/Argon2
-  stretching protects low-entropy passwords (which cannot exist here) and
-  would hang CPU on every hello — a handshake DoS surface. The per-credential
-  `scheme` field is the conscious migration path; a new scheme is new data,
-  not a format break.
+  transitions living once is what guarantees a restart cannot re-fold a
+  different roster — don't mutate entry state anywhere but `Apply`.
+- **The credential scheme is deliberately unstretched — don't "harden" it
+  with a KDF.** Keys are 256-bit CSPRNG values, so stretching protects
+  nothing and would put CPU on every hello — a handshake DoS surface (see
+  "Registration/originality"). The per-credential `scheme` field is the
+  migration path; a new scheme is new data, not a format break.
 - **A presented `engineKey` is always validated — both policies.** Open mode
-  only means a *keyless* hello is admitted; an unknown, rotated-away, or
-  deactivated key rejects loudly even on an Open server (the session-1
-  admin-key shape, one gate over). And the key authenticates the claimed
-  name — a valid key with a mismatched `engineName` is rejected (without
-  echoing the roster name), never silently renamed: silent adoption would
-  fork the engine's own logs from the server's record, an attribution
-  nightmare in arbitration.
+  only means a *keyless* hello is admitted (see "Registration/originality").
+  The key authenticates the claimed name — a valid key with a mismatched
+  `engineName` is rejected (without echoing the roster name), never silently
+  renamed: silent adoption would fork the engine's own logs from the
+  server's record, an attribution nightmare in arbitration.
 - **`Registered` + empty roster is a warned boot, not a failed one.** The
-  bootstrap is boot-enforcing → register over the admin surface → engines
-  connect, no restart; failing the boot would break it. The loud startup
-  warning is the misconfiguration signal. An *unparseable* policy value does
-  fail the boot (config binding throws) — a typo must never silently open
-  the wire.
+  no-restart bootstrap (boot → register → connect) depends on it; the loud
+  startup warning is the misconfiguration signal (see
+  "Registration/originality"). An *unparseable* policy value does fail the
+  boot — a typo must never silently open the wire.
 
 ## Subproject-internal next steps
 
@@ -1266,17 +1215,13 @@ public sealed record AuditTerminalEvent(..., MatchStatus Status,            // "
   the roster's state is their fold, so deleting one rewrites history.
 - **Flaky `MatExportEndpointTests.ExportEndpoint_Faulted_AbandonedWithInternalErrorReason`**
   — failed once on a cold full-suite run, then green in isolation and on warm
-  re-runs (217/217). A timing race on the Faulted-match export path: the match
-  faults on a background thread and the export endpoint races that fault.
-  Pre-existing since Arc 7 (the commit that noted the Faulted export test's
-  upgrade path), independent of the DecisionId bump whose
-  consumer-graph audit surfaced it. Fix: make the export deterministic — gate
-  it on fault completion (or otherwise remove the race) rather than papering
-  over with a retry. Its own hygiene touch (the Arc 8 session closed without
-  taking the ride-along).
+  re-runs. A timing race on the Faulted-match export path: the match faults
+  on a background thread and the export endpoint races that fault. Fix: make
+  the export deterministic — gate it on fault completion (or otherwise
+  remove the race) rather than papering over with a retry.
 - **Disconnect-during-`matchStarted` forfeit gap** — an engine that vanishes
   in the narrow window while `matchStarted` is being sent can surface as a
   Faulted match rather than a Forfeited one (seen once as test flake; the
   send failure appears to bypass the disconnect translation). Deterministic
-  repro + taxonomy fix wanted; execution semantics were out of scope for the
-  read-surface arc.
+  repro + taxonomy fix wanted; deliberately left untouched while the
+  read surfaces were built.
