@@ -1,4 +1,9 @@
 <Solution>
+  <Project Path="../BgDataTypes_Lib/BgDataTypes_Lib/BgDataTypes_Lib.csproj" />
+  <Project Path="../BgGame_Lib/BgGame_Lib/BgGame_Lib.csproj" />
+  <Project Path="../BgInference/BgInference/BgInference.csproj" />
+  <Project Path="../BgMatchFormat_Lib/BgMatchFormat_Lib/BgMatchFormat_Lib.csproj" />
+  <Project Path="../BgMoveGen/BgMoveGen/BgMoveGen.csproj" />
   <Project Path="BgTournament.Api/BgTournament.Api.csproj" />
   <Project Path="BgTournament.Core/BgTournament.Core.csproj" />
   <Project Path="BgTournament.EngineClient/BgTournament.EngineClient.csproj" />
