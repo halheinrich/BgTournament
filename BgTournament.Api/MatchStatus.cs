@@ -8,7 +8,7 @@ namespace BgTournament.Api;
 /// enum, so an internal status change is visibly a contract change.
 /// Serializes as the camelCase strings pinned on each member.
 /// </summary>
-[JsonConverter(typeof(JsonStringEnumConverter<MatchStatus>))]
+[JsonConverter(typeof(StrictJsonStringEnumConverter<MatchStatus>))]
 public enum MatchStatus
 {
     /// <summary>Still being played.</summary>

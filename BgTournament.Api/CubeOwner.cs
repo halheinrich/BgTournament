@@ -7,7 +7,7 @@ namespace BgTournament.Api;
 /// (absolute), like everything else in a replay position. Serializes as the
 /// camelCase strings pinned on each member.
 /// </summary>
-[JsonConverter(typeof(JsonStringEnumConverter<CubeOwner>))]
+[JsonConverter(typeof(StrictJsonStringEnumConverter<CubeOwner>))]
 public enum CubeOwner
 {
     /// <summary>Nobody owns the cube yet; either side may double.</summary>

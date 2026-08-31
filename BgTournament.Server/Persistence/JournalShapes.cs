@@ -1,4 +1,5 @@
 using System.Text.Json.Serialization;
+using BgTournament.Api;
 
 namespace BgTournament.Server.Persistence;
 
@@ -6,10 +7,11 @@ namespace BgTournament.Server.Persistence;
 // substrate enums it mirrors: a journal file is a durable format, and an Api
 // or substrate rename must never silently rewrite bytes already on disk.
 // JournalMapping is the only place the correspondences live; JournalGoldenTests
-// pins every string.
+// pins every string. StrictJsonStringEnumConverter is shared mechanism, not
+// shared vocabulary — the tokens themselves stay pinned per member here.
 
 /// <summary>A match seat, journal-pinned.</summary>
-[JsonConverter(typeof(JsonStringEnumConverter<JournalSeat>))]
+[JsonConverter(typeof(StrictJsonStringEnumConverter<JournalSeat>))]
 internal enum JournalSeat
 {
     /// <summary>Seat One (the record's <c>engineOne</c>).</summary>
@@ -25,7 +27,7 @@ internal enum JournalSeat
 /// A snapshot's cube owner, journal-pinned. Perspective-relative like the
 /// substrate value it records: interpret via the entry's on-roll seat.
 /// </summary>
-[JsonConverter(typeof(JsonStringEnumConverter<JournalCubeOwner>))]
+[JsonConverter(typeof(StrictJsonStringEnumConverter<JournalCubeOwner>))]
 internal enum JournalCubeOwner
 {
     /// <summary>Nobody owns the cube yet.</summary>
@@ -42,7 +44,7 @@ internal enum JournalCubeOwner
 }
 
 /// <summary>A cube decision, journal-pinned (offer side and response side).</summary>
-[JsonConverter(typeof(JsonStringEnumConverter<JournalCubeAction>))]
+[JsonConverter(typeof(StrictJsonStringEnumConverter<JournalCubeAction>))]
 internal enum JournalCubeAction
 {
     /// <summary>The on-roll player declined to double.</summary>
@@ -63,7 +65,7 @@ internal enum JournalCubeAction
 }
 
 /// <summary>Which decision query a clock settlement timed, journal-pinned.</summary>
-[JsonConverter(typeof(JsonStringEnumConverter<JournalDecisionKind>))]
+[JsonConverter(typeof(StrictJsonStringEnumConverter<JournalDecisionKind>))]
 internal enum JournalDecisionKind
 {
     /// <summary>A play query (checker movement for a rolled pair).</summary>
@@ -80,7 +82,7 @@ internal enum JournalDecisionKind
 }
 
 /// <summary>A finished game's win kind, journal-pinned.</summary>
-[JsonConverter(typeof(JsonStringEnumConverter<JournalResultKind>))]
+[JsonConverter(typeof(StrictJsonStringEnumConverter<JournalResultKind>))]
 internal enum JournalResultKind
 {
     /// <summary>A single win.</summary>
@@ -101,7 +103,7 @@ internal enum JournalResultKind
 /// a running match is a journal with no terminal event, and an interrupted one
 /// is exactly that at rehydration time — neither is ever written.
 /// </summary>
-[JsonConverter(typeof(JsonStringEnumConverter<JournalMatchOutcome>))]
+[JsonConverter(typeof(StrictJsonStringEnumConverter<JournalMatchOutcome>))]
 internal enum JournalMatchOutcome
 {
     /// <summary>Played to a natural end.</summary>
@@ -122,7 +124,7 @@ internal enum JournalMatchOutcome
 }
 
 /// <summary>Why a match was forfeited, journal-pinned — structured for the arbitration record, not string parsing.</summary>
-[JsonConverter(typeof(JsonStringEnumConverter<JournalForfeitCause>))]
+[JsonConverter(typeof(StrictJsonStringEnumConverter<JournalForfeitCause>))]
 internal enum JournalForfeitCause
 {
     /// <summary>A malformed, illegal, or out-of-contract reply.</summary>
@@ -147,7 +149,7 @@ internal enum JournalForfeitCause
 }
 
 /// <summary>How a journaled tournament concluded, journal-pinned (terminal-only, like <see cref="JournalMatchOutcome"/>).</summary>
-[JsonConverter(typeof(JsonStringEnumConverter<JournalTournamentOutcome>))]
+[JsonConverter(typeof(StrictJsonStringEnumConverter<JournalTournamentOutcome>))]
 internal enum JournalTournamentOutcome
 {
     /// <summary>Every scheduled match folded and the winner is declared.</summary>

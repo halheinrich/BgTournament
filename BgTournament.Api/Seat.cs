@@ -9,7 +9,7 @@ namespace BgTournament.Api;
 /// board for a whole replay. Serializes as the camelCase strings pinned on
 /// each member.
 /// </summary>
-[JsonConverter(typeof(JsonStringEnumConverter<Seat>))]
+[JsonConverter(typeof(StrictJsonStringEnumConverter<Seat>))]
 public enum Seat
 {
     /// <summary>The first seat — occupied by the match's <c>engineOne</c>.</summary>

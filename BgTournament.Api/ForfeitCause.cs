@@ -8,7 +8,7 @@ namespace BgTournament.Api;
 /// reads a cause, not a prose string (<c>detail</c> stays the human-readable
 /// companion). Serializes as the camelCase strings pinned on each member.
 /// </summary>
-[JsonConverter(typeof(JsonStringEnumConverter<ForfeitCause>))]
+[JsonConverter(typeof(StrictJsonStringEnumConverter<ForfeitCause>))]
 public enum ForfeitCause
 {
     /// <summary>A malformed, illegal, or out-of-contract reply.</summary>

@@ -7,7 +7,7 @@ namespace BgTournament.Api;
 /// the settled award (cube × multiplier) — this is the descriptive half.
 /// Serializes as the camelCase strings pinned on each member.
 /// </summary>
-[JsonConverter(typeof(JsonStringEnumConverter<GameResultKind>))]
+[JsonConverter(typeof(StrictJsonStringEnumConverter<GameResultKind>))]
 public enum GameResultKind
 {
     /// <summary>The loser had borne off at least one checker (or passed a double).</summary>

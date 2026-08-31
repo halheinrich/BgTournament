@@ -6,7 +6,7 @@ namespace BgTournament.Api;
 /// Which decision query a clocked audit event timed. Serializes as the
 /// camelCase strings pinned on each member.
 /// </summary>
-[JsonConverter(typeof(JsonStringEnumConverter<DecisionKind>))]
+[JsonConverter(typeof(StrictJsonStringEnumConverter<DecisionKind>))]
 public enum DecisionKind
 {
     /// <summary>A play query (checker movement for a rolled pair).</summary>

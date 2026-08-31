@@ -159,12 +159,19 @@ internal sealed record ReferenceBotOptions
             return LogLevel.Information;
         }
 
-        if (!Enum.TryParse(raw, ignoreCase: true, out LogLevel level) || !Enum.IsDefined(level))
+        // The reader is the inverse of what the usage line offers: level
+        // *names*, case-insensitive. Enum.TryParse would also accept a numeric
+        // ordinal ("3" → Warning), coupling the CLI contract to member
+        // numbering (halheinrich/backgammon#164) — resolve by name search.
+        foreach (LogLevel candidate in Enum.GetValues<LogLevel>())
         {
-            throw new UsageException(
-                $"'--verbosity' must be one of trace|debug|information|warning|error|critical|none; got '{raw}'.");
+            if (string.Equals(raw, candidate.ToString(), StringComparison.OrdinalIgnoreCase))
+            {
+                return candidate;
+            }
         }
 
-        return level;
+        throw new UsageException(
+            $"'--verbosity' must be one of trace|debug|information|warning|error|critical|none; got '{raw}'.");
     }
 }

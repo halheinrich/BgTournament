@@ -135,6 +135,25 @@ public class ReferenceBotHostTests
         Assert.Throws<UsageException>(() => ReferenceBotOptions.Parse(
             ["--server", "ws://localhost/engine", "--name", "Bot", "--verbosity", "loud"]));
 
+    /// <summary>
+    /// The usage line offers level names, so the reader accepts exactly those —
+    /// a numeric ordinal ("3" would once have parsed as Warning) is rejected,
+    /// not silently coupled to member numbering (halheinrich/backgammon#164).
+    /// </summary>
+    [Fact]
+    public void Parse_NumericVerbosity_Throws() =>
+        Assert.Throws<UsageException>(() => ReferenceBotOptions.Parse(
+            ["--server", "ws://localhost/engine", "--name", "Bot", "--verbosity", "3"]));
+
+    /// <summary>The lowercase spelling the usage line advertises binds (case-insensitive by design).</summary>
+    [Fact]
+    public void Parse_LowercaseVerbosity_Binds()
+    {
+        var options = ReferenceBotOptions.Parse(
+            ["--server", "ws://localhost/engine", "--name", "Bot", "--verbosity", "warning"]);
+        Assert.Equal(Microsoft.Extensions.Logging.LogLevel.Warning, options.Verbosity);
+    }
+
     [Fact]
     public void Parse_UnknownFlag_Throws() =>
         Assert.Throws<UsageException>(() => ReferenceBotOptions.Parse(

@@ -8,7 +8,7 @@ namespace BgTournament.Api;
 /// out-of-context cube action. Serializes as the camelCase strings pinned on
 /// each member.
 /// </summary>
-[JsonConverter(typeof(JsonStringEnumConverter<CubeResponseAction>))]
+[JsonConverter(typeof(StrictJsonStringEnumConverter<CubeResponseAction>))]
 public enum CubeResponseAction
 {
     /// <summary>The double was accepted; play continued at the raised stake.</summary>
