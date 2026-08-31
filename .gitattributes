@@ -2,8 +2,13 @@
 # Ruling: halheinrich/backgammon#28.
 * text=auto eol=lf
 
-# Jellyfish .MAT export goldens are byte-exact fixtures. The exporter emits
-# LF-only text with no trailing whitespace; keep the committed goldens LF and
-# out of the umbrella's `* text=auto` EOL conversion so a Windows checkout does
-# not rewrite them to CRLF and break byte comparison.
+# Jellyfish .MAT export goldens are byte-exact fixtures. Measured
+# (halheinrich/backgammon#166): MatExporter deliberately emits LF-only text
+# (a '\n' constant; its doc bars StringBuilder.AppendLine for exactly this),
+# and the committed golden is LF-only — 83 LF-terminated lines, zero CR bytes.
+# `-text` is defense in depth for byte-exactness, not a CRLF fix: under the
+# pinned `eol=lf` above no checkout would CRLF these anyway, but a fixture
+# compared byte-for-byte must sit outside ALL EOL processing — index
+# normalization at add time and any future checkout policy — so the bytes the
+# test reads are always the bytes that were committed.
 *.mat -text
