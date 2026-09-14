@@ -287,14 +287,17 @@ public class MatExportEndpointTests
     }
 
     /// <summary>
-    /// Read a committed golden, defensively normalizing to LF: the file is stored
-    /// LF (see <c>.gitattributes</c>), but normalizing keeps the test honest on a
-    /// checkout that rewrote line endings, without masking a CR the server emits.
+    /// Read a committed golden's text as committed, line endings included — no
+    /// normalization. The golden is byte-exact by <c>*.mat -text</c> in
+    /// <c>.gitattributes</c> (halheinrich/backgammon#166): it sits outside all
+    /// EOL processing, so no checkout rewrites its LF-only bytes. An EOL
+    /// difference on either side — a CR the golden gained or a CR the server
+    /// emits — is therefore a real difference, and the comparison fails loud.
     /// </summary>
     private static string GoldenText(string name)
     {
         string path = Path.GetFullPath(
             Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "Goldens", name));
-        return File.ReadAllText(path).Replace("\r\n", "\n");
+        return File.ReadAllText(path);
     }
 }
