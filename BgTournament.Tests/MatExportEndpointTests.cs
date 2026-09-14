@@ -287,17 +287,22 @@ public class MatExportEndpointTests
     }
 
     /// <summary>
-    /// Read a committed golden's text as committed, line endings included — no
-    /// normalization. The golden is byte-exact by <c>*.mat -text</c> in
-    /// <c>.gitattributes</c> (halheinrich/backgammon#166): it sits outside all
-    /// EOL processing, so no checkout rewrites its LF-only bytes. An EOL
-    /// difference on either side — a CR the golden gained or a CR the server
-    /// emits — is therefore a real difference, and the comparison fails loud.
+    /// Read a committed golden as text that re-encodes to exactly its committed
+    /// bytes, line endings and encoding alike — no normalization. The golden is
+    /// byte-exact by <c>*.mat -text</c> in <c>.gitattributes</c>
+    /// (halheinrich/backgammon#166): it sits outside all EOL processing, so no
+    /// checkout rewrites its LF-only bytes. The bytes are decoded strictly: a
+    /// UTF-8 BOM survives as U+FEFF (where <see cref="File.ReadAllText(string)"/>
+    /// would strip it) and an invalid byte throws rather than becoming U+FFFD,
+    /// so UTF-8 re-encoding reproduces the file byte for byte. An EOL or BOM
+    /// difference on either side is therefore a real difference, and the
+    /// comparison fails loud.
     /// </summary>
     private static string GoldenText(string name)
     {
         string path = Path.GetFullPath(
             Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "Goldens", name));
-        return File.ReadAllText(path);
+        var strictUtf8 = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
+        return strictUtf8.GetString(File.ReadAllBytes(path));
     }
 }
