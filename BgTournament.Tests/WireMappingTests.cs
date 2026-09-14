@@ -117,9 +117,9 @@ public class WireMappingTests
     [Fact]
     public void ToWireMoves_StripsHitEncoding_AndKeepsBearOff()
     {
-        var play = new Play();
-        play.Add(new Move(24, -21)); // hit on 21, sign-encoded in the substrate
-        play.Add(new Move(6, 0));    // bear off
+        var play = Play.Create(
+            new Move(24, -21), // hit on 21, sign-encoded in the substrate
+            new Move(6, 0));   // bear off
 
         var moves = play.ToWireMoves();
 

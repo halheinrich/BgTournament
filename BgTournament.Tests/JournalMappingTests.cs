@@ -46,9 +46,7 @@ public class JournalMappingTests
     [Fact]
     public void PlayEntry_RoundTrips_HitEncodingIntact()
     {
-        var play = new Play();
-        play.Add(new Move(8, -5));
-        play.Add(new Move(6, 0));
+        var play = Play.Create(new Move(8, -5), new Move(6, 0));
         var entry = new PlayTranscriptEntry(Snapshot(), MatchSeat.One, Die1: 3, Die2: 1, play);
 
         var back = Assert.IsType<PlayTranscriptEntry>(RoundTrip(entry));
