@@ -33,161 +33,130 @@ https://github.com/halheinrich/BgTournament — branch `main`.
   read in place from the sibling checkout). Not a dependency of the shipped
   projects.
 
-## Directory tree
+## Layout
 
-```
-BgTournament/
-├── BgTournament.slnx
-├── Directory.Packages.props            CPM — inline Version= is banned
-├── PROTOCOL.md                         THE engine contract (language-neutral, versioned)
-├── ONBOARDING.md                       competitor on-ramp: register → connect → play (links PROTOCOL.md)
-├── RULES.md                            championship conduct: attestation, forfeits, fair dice (links PROTOCOL/ONBOARDING)
-├── INSTRUCTIONS.md
-├── BgTournament.Protocol/              wire contract's .NET binding + substrate bridge
-│   ├── ProtocolMessage.cs              polymorphic base; "type" discriminator registry
-│   ├── QueryMessage.cs / ReplyMessage.cs   requestId-carrying bases
-│   ├── HelloMessage.cs / WelcomeMessage.cs / RejectedMessage.cs
-│   ├── PlayQueryMessage.cs / PlayReplyMessage.cs
-│   ├── CubeOfferQueryMessage.cs / CubeOfferReplyMessage.cs
-│   ├── CubeResponseQueryMessage.cs / CubeResponseReplyMessage.cs
-│   ├── MatchStartedMessage.cs / MatchEndedMessage.cs
-│   ├── VerifiableDice.cs                 fair-dice wire SSOT: algorithm id + commit-context format
-│   ├── WireTimeControl.cs              time-control announcement shape (rides matchStarted)
-│   ├── WireGameState.cs / WireMove.cs  hand-defined wire shapes (never substrate types)
-│   ├── WireCubeOwner.cs / CubeOfferAction.cs / CubeResponseAction.cs
-│   ├── MatchEndReason.cs / ForfeitSide.cs
-│   ├── WireProtocol.cs                 Version const + the ONLY (de)serialization path
-│   ├── WireMapping.cs                  the ONLY wire ↔ substrate field correspondences
-│   └── ProtocolSocket.cs               framing rule (1 text frame = 1 message, 64 KiB)
-├── BgTournament.Api/                   admin HTTP contracts (zero dependencies, public)
-│   ├── MatchStatus.cs / TournamentStatus.cs    status vocabularies (Server uses them too)
-│   ├── ErrorResponse.cs                the typed error body on every non-success response
-│   ├── AdminApiKey.cs                  the admin key header-name SSOT (X-Api-Key)
-│   ├── EngineAttestation.cs            the provenance declaration (stored as declared)
-│   ├── RegisterEngineRequest.cs / RosterEntry.cs   roster request/entry shapes (credential-free)
-│   ├── EngineKeyGrant.cs               the show-once key issuance envelope (register + rotate)
-│   ├── StartMatchRequest.cs / StartTournamentRequest.cs
-│   ├── TimeControl.cs                  validated Fischer control + its JsonException-funnel converter
-│   ├── EngineSummary.cs / MatchSummary.cs
-│   ├── StandingEntry.cs / TournamentMatchEntry.cs / TournamentSummary.cs
-│   ├── Seat.cs / CubeOwner.cs          seat-keyed identities for replay shapes
-│   ├── GameResultKind.cs / CubeResponseAction.cs
-│   ├── GamePosition.cs / PlayMove.cs   seat-One-frame position; mover-relative move
-│   ├── GameEntry.cs                    "type"-discriminated union: play/cubeOffer/cubeResponse
-│   ├── GameReplay.cs / MatchGamesResponse.cs   per-game replay + the endpoint envelope
-│   ├── LiveMatchEvent.cs               live-feed envelope union: snapshot/gameStarted/entry/gameEnded/terminal
-│   ├── ForfeitCause.cs / DecisionKind.cs       audit vocabularies (structured cause; timed-decision kind)
-│   ├── AuditEvent.cs                   audit-timeline union (the fourth event family; no boards/moves)
-│   └── MatchAuditResponse.cs           the audit endpoint envelope (status + integrity + events)
-├── BgTournament.Core/                  execution-blind tournament domain (zero dependencies)
-│   ├── TournamentFormat.cs             round-robin config: matchLength × matchesPerPairing
-│   ├── ScheduledMatch.cs               one schedule row: seats + the derived dice seed
-│   ├── StandingsRow.cs                 one standings line: wins, losses, Sonneborn-Berger
-│   └── Tournament.cs                   the aggregate: schedule, results, tie-break ladder
-├── BgTournament.Server/                the tournament host (all types internal)
-│   ├── Program.cs                      /engine (WS) + the admin HTTP endpoints; rehydrate-before-serve
-│   ├── AdminOptions.cs                 Admin:ApiKeys binding (named keys; empty = anonymous service)
-│   ├── AdminApiKeys.cs                 the validated key set: boot-time validation, fixed-time identify
-│   ├── AdminActor.cs                   one request's authenticated identity (feature + minimal-API binding)
-│   ├── AdminAuthenticationMiddleware.cs  the whole-surface identity gate (/engine exempt)
-│   ├── EnginePolicy.cs                 who may connect on the wire: Open vs Registered
-│   ├── EngineKeyCredentials.cs         key generation + the salted-hash scheme (sha256-salted-v1)
-│   ├── RosterService.cs                the roster: fold + mutations + key resolution (one transition SSOT)
-│   ├── EngineSocketEndpoint.cs         handshake gate incl. the roster gate (§3.1); named rejections
-│   ├── EngineConnection.cs             receive loop; one in-flight query; Closed task
-│   ├── IEngineChannel.cs               query seam (EngineConnection live, faked in tests)
-│   ├── RemoteEngineAgent.cs            IPlayAgent+ICubeAgent over the channel; taxonomy
-│   ├── PlayResolver.cs                 wire play → canonical hit-encoded candidate (the WirePlayKey hop projection)
-│   ├── CountingDiceSource.cs           IDiceSource wrapper counting rolls (fair-mode play-query roll index)
-│   ├── MatchClock.cs                   per-match Fischer clock over the TimeProvider seam; settlement reports
-│   ├── DecisionKind.cs                 the server's one decision vocabulary (clock evidence + query labels)
-│   ├── EngineRegistry.cs               sessions by name; per-engine busy flag
-│   ├── MatchService.cs                 match host: attribution, forfeits, records, journal-settled gate
-│   ├── TournamentService.cs            tournament host: claims, orchestration, folding
-│   ├── EngineFailureExceptions.cs      timeout / disconnected / protocol-violation
-│   ├── ForfeitCause.cs                 the structured forfeit taxonomy the journal records
-│   ├── TournamentOptions.cs            decision + handshake timeouts (appsettings)
-│   ├── ApiMapping.cs                   the ONLY server-internal → Api projections
-│   ├── ReplayProjection.cs             transcript → replay contract: stamped-seat read + flip
-│   ├── MatExportProjection.cs          record → MatExporter factory choice (.MAT surface)
-│   ├── AuditProjection.cs              journal → audit contract: the arbitration timeline walk
-│   ├── LiveMatch.cs                    per-match live cache + SSE broadcast (the IMatchObserver adapter)
-│   ├── CompositeMatchObserver.cs       fans the runner's callbacks to LiveMatch + MatchJournal
-│   └── Persistence/                    the durable records journal + arbitration log
-│       ├── MatchJournalEvent.cs        match-journal DTO union ("type"-discriminated JSONL lines)
-│       ├── TournamentJournalEvent.cs   tournament-journal DTO union
-│       ├── ServerJournalEvent.cs       server-journal DTO union (engine lifecycle evidence)
-│       ├── JournalShapes.cs            journal-local enums/shapes (never Api or substrate enums)
-│       ├── JournalCodec.cs             schema versions + the ONLY journal (de)serialization path
-│       ├── JournalMapping.cs           the ONLY substrate/server ↔ journal correspondences (both ways)
-│       ├── IJournalStore.cs            the store seam: raw sinks/sources by kind + id
-│       ├── FileJournalStore.cs         <DataDirectory>/matches|tournaments|server/<id>.jsonl
-│       ├── JournalWriter.cs            per-journal channel + background pump; flush per event
-│       ├── JournalReader.cs            the one read policy: torn-tail / corruption trusted-prefix parse
-│       ├── MatchJournal.cs             the write-through IMatchObserver sibling of LiveMatch
-│       ├── TournamentJournal.cs        created / matchStarted / result / terminal
-│       ├── ServerJournal.cs            hosted per-boot segment: started/connect/disconnect/reject/stopped
-│       ├── RosterJournalEvent.cs       roster DTO union + attestation/credential journal shapes
-│       ├── RosterJournal.cs            synchronous per-boot roster segment (durable-before-answered)
-│       ├── JournalRehydrator.cs        startup fold: journals → records, before endpoints serve
-│       └── PersistenceOptions.cs       Persistence:DataDirectory (appsettings)
-├── BgTournament.EngineClient/          .NET SDK + reference agents
-│   ├── EngineClient.cs                 connect/handshake/serve loop over local agents; fair-dice hook; clock-aware dispatch
-│   ├── EngineIdentity.cs               hello identity
-│   ├── HandshakeRejectedException.cs
-│   ├── DiceVerification.cs             pure fair-dice verifier + DiceVerificationReport / ObservedRoll
-│   ├── DiceAuditRecorder.cs            per-match observation accumulator feeding the verifier at match end
-│   ├── IClockAwareAgent.cs             clock opt-in base: the always-fired nullable control announcement
-│   ├── IClockAwarePlayAgent.cs         IPlayAgent + the ClockReading play overload (clocked decisions)
-│   ├── IClockAwareCubeAgent.cs         ICubeAgent + the ClockReading cube overloads (clocked decisions)
-│   ├── MatchTimeControl.cs             the announced Fischer control, TimeSpan-typed
-│   ├── ClockReading.cs                 both pools as of query issuance, TimeSpan-typed
-│   ├── RandomPlayAgent.cs              reference play policy (seed required)
-│   └── PassiveCubeAgent.cs             reference cube policy (never double, always take)
-├── BgTournament.ReferenceBot/          runnable console host over EngineClient (the third-party door)
-│   ├── Program.cs                      thin entry: parse → compose → serve; named exit codes, no stack traces
-│   ├── ReferenceBotOptions.cs          validated CLI args (Parse → UsageException funnel)
-│   ├── ReferenceBot.cs                 composition seam: CreateClient + DescribeDiceReport + usage text
-│   ├── ExitCode.cs                     sysexits-style outcomes (0/64/68/69/130)
-│   └── UsageException.cs               the one CLI-usage error funnel
-└── BgTournament.Tests/
-    ├── GoldenWireTests.cs              byte-for-byte wire pins, every message
-    ├── ApiGoldenTests.cs               byte-for-byte admin JSON pins, every shape + enum
-    ├── ApiMappingTests.cs              record → summary projection fidelity (what a golden refresh would paper over)
-    ├── ProtocolRoundTripTests.cs       strictness + tolerance edges
-    ├── ProtocolDocTests.cs             PROTOCOL.md examples stay canonical wire text
-    ├── WireMappingTests.cs             field preservation + the no-double-flip pin
-    ├── ReferenceBotTests.cs            legality sweep, determinism, empty play (the agent)
-    ├── ReferenceBotHostTests.cs        the exe's host seam: parse/format units + in-proc composition smoke
-    ├── PlayResolverTests.cs            hit restoration, route disambiguation, dance resolution
-    ├── RemoteEngineAgentTests.cs       forfeit taxonomy over a scripted channel
-    ├── ServerTestHarness.cs            TestEngine (raw-wire scripting) + helpers
-    ├── ServerIntegrationTests.cs       handshake gate + taxonomy over TestServer
-    ├── WireMatchSmokeTests.cs          full wire matches: random pair + BgInference + fair-mode (SmokeC)
-    ├── DiceVerificationTests.cs        the pure fair-dice verifier (verify / mismatch / unknown-algo / bounds)
-    ├── FairDiceLifecycleTests.cs       wire-boundary branch: seeded omits fields, fair publishes commitment
-    ├── TournamentFairDiceTests.cs      unseeded tournament ⇒ per-match keys; seeded ⇒ none
-    ├── TimeControlTests.cs             the validated value type + its JsonException funnel
-    ├── MatchClockTests.cs              Fischer arithmetic, deterministic on a fake TimeProvider
-    ├── TimeControlWireTests.cs         clocks end to end: announcement, pools, flag fall, tournament fold, SDK surfacing
-    ├── ListEndpointTests.cs            /matches + /tournaments listings, creation order
-    ├── ReplayProjectionTests.cs        the stamped-seat projection on scripted-dice MatchRunner runs
-    ├── ReplayEndpointTests.cs          /matches/{id}/games over TestServer, 404/409/partial
-    ├── LiveMatchTests.cs               the live cache/broadcast core over its IMatchObserver surface
-    ├── LiveEndpointTests.cs            /matches/{id}/live SSE end to end: ordering, forfeit, already-done
-    ├── MatExportEndpointTests.cs       /matches/{id}/export.mat: golden, money, forfeit/aborted/faulted, 404/409
-    ├── TournamentCoreTests.cs          domain pins: schedule, seeds, tie-break ladder
-    ├── TournamentServerTests.cs        tournament claims, validation, forfeit folding
-    ├── TournamentSmokeTests.cs         3-engine round-robin over the wire to a winner
-    ├── JournalGoldenTests.cs           byte-for-byte journal-event pins, every event + enum (all three kinds)
-    ├── JournalMappingTests.cs          substrate ↔ journal fidelity round trips (hits, frames, taxonomy)
-    ├── RehydrationTests.cs             restart identity, torn tail/corruption, fair-dice evidence, version tolerance/skip
-    ├── AuditEndpointTests.cs           /matches/{id}/audit: replay join, clock trail, fair packet, drain gate, damage
-    ├── ServerJournalTests.cs           segment per boot; connect/disconnect/reject/stopped evidence
-    ├── AdminAuthTests.cs               admin identity gate: both modes, actor stamps, refusal evidence, boot validation
-    ├── RosterEndpointTests.cs          registration lifecycle, actor stamps, no-plaintext-on-disk, rehydration
-    └── WireEnforcementTests.cs         policy × key matrix, rotation kills old keys, SDK round-trip, rejection evidence
-```
+Seven projects under `BgTournament.slnx`, governed by repo-root
+`Directory.Build.props` (TFM, `TreatWarningsAsErrors`, XML doc generation)
+and `Directory.Packages.props` (Central Package Management — no inline
+`Version=`). Three documents sit at the root for engine authors:
+`PROTOCOL.md`, the canonical engine contract (language-neutral, versioned);
+`ONBOARDING.md`, the competitor on-ramp (register, connect, play);
+`RULES.md`, championship conduct (attestation, forfeits, fair dice).
+
+**`BgTournament.Protocol/`** — the wire contract's .NET binding and its
+bridge to the substrate types. Three areas:
+
+- **Messages** — `ProtocolMessage`, the polymorphic base and its `"type"`
+  discriminator registry; `QueryMessage` / `ReplyMessage`, the
+  requestId-carrying bases; the handshake (hello, welcome, rejected), the
+  three query/reply pairs (play, cube offer, cube response) and the match
+  lifecycle notifications (started, ended).
+- **Wire shapes** — hand-defined, never substrate types: the game state,
+  move, cube owner and time-control shapes, the cube-action and match-end
+  enums; `VerifiableDice`, the fair-dice algorithm id and commit-context
+  format.
+- **The single paths** — `WireProtocol`, the protocol version and the one
+  (de)serialization path; `WireMapping`, the one set of wire ↔ substrate
+  correspondences; `ProtocolSocket`, the frame rule (one text frame is one
+  message, 64 KiB cap).
+
+**`BgTournament.Api/`** — the admin HTTP contracts: public, zero
+dependencies. Five areas:
+
+- **Requests and credentials** — the match, tournament and engine
+  registration requests; `EngineAttestation`, provenance as declared;
+  `EngineKeyGrant`, the show-once key envelope; `AdminApiKey`, the admin
+  header name; `TimeControl`, the validated Fischer control.
+- **Status and summaries** — `MatchStatus` / `TournamentStatus` (which the
+  server uses too), the engine, match and tournament summaries, standings
+  and schedule entries, the credential-free `RosterEntry`, and
+  `ErrorResponse`, the typed body of every non-success response.
+- **Replay and the live feed** — `GameReplay` and its endpoint envelope,
+  `GameEntry` (the discriminated play / cube-offer / cube-response union),
+  `GamePosition` (seat One's frame) and `PlayMove` (mover-relative), the
+  seat, cube-owner, result and response enums; `LiveMatchEvent`, the
+  live-feed union.
+- **Audit** — `AuditEvent`, the arbitration timeline union (no boards, no
+  moves), its endpoint envelope, and the forfeit-cause and decision-kind
+  vocabularies.
+- **Enum strictness** — `StrictJsonStringEnumConverter`, the
+  string-token-exact converter the Api's enums and the server's journal
+  shapes register.
+
+**`BgTournament.Core/`** — the execution-blind tournament domain, zero
+dependencies: `Tournament`, the round-robin aggregate (schedule, results,
+tie-break ladder), with `TournamentFormat`, `ScheduledMatch` (a schedule row
+and its derived dice seed) and `StandingsRow`.
+
+**`BgTournament.Server/`** — the tournament host (`Sdk.Web`), every type
+`internal`. Seven areas:
+
+- **Host** — `Program.cs`: the `/engine` WebSocket endpoint and the admin
+  HTTP endpoints, the records rehydrated before any endpoint serves;
+  `appsettings.json` and its options types (`TournamentOptions`: the
+  decision and handshake timeouts and the engine policy; `AdminOptions`;
+  `PersistenceOptions`).
+- **Admin identity** — `AdminApiKeys` (the validated key set),
+  `AdminActor` (one request's identity), `AdminAuthenticationMiddleware`
+  (the whole-surface gate, `/engine` exempt).
+- **Roster** — `EnginePolicy` (Open or Registered), `EngineKeyCredentials`
+  (key generation and the salted hash), `RosterService` (the roster and
+  its one transition point).
+- **The engine wire** — `EngineSocketEndpoint` (the handshake gate, the
+  roster gate included), `EngineConnection` (the receive loop, one query in
+  flight), `IEngineChannel` (the query seam tests fake), `EngineRegistry`
+  (sessions by name), `RemoteEngineAgent` (the substrate agents over a
+  channel, failing with `EngineFailureExceptions`' taxonomy),
+  `PlayResolver` (a wire play to its canonical candidate).
+- **Hosting matches and tournaments** — `MatchService`,
+  `TournamentService`, `MatchClock` (the per-match Fischer clock over the
+  `TimeProvider` seam), `CountingDiceSource` (the roll index fair mode
+  needs), `DecisionKind` (the server's decision vocabulary), `ForfeitCause`
+  (the structured forfeit taxonomy).
+- **Projections and the live feed** — `ApiMapping` (the one internal →
+  Api projection), `ReplayProjection`, `MatExportProjection` (the `.MAT`
+  export, through BgMatchFormat_Lib), `AuditProjection`; `LiveMatch` (the
+  per-match cache and SSE broadcast) and `CompositeMatchObserver` (the
+  runner's callbacks fanned to it and to the journal).
+- **Persistence** — `Persistence/`, the durable records journal: an event
+  union per journal kind (match, tournament, server, roster) and
+  `JournalShapes`; `JournalCodec` (the schema versions and the one
+  (de)serialization path); `JournalMapping` (the one set of substrate ↔
+  journal correspondences); `IJournalStore` / `FileJournalStore` (one
+  `.jsonl` per journal, a directory per kind under the data directory);
+  `JournalWriter` and `JournalReader` (the write pump; the one read policy,
+  trusted-prefix recovery included); a journal writer per kind; and
+  `JournalRehydrator`, the startup fold.
+
+**`BgTournament.EngineClient/`** — the .NET engine SDK and the reference
+agents. Four areas:
+
+- **The client** — `EngineClient` (connect, handshake, serve local agents;
+  the fair-dice hook and clock-aware dispatch), `EngineIdentity`,
+  `HandshakeRejectedException`.
+- **Clocks** — the clock-aware agent interfaces (the opt-in clocked
+  overloads), `MatchTimeControl`, `ClockReading`.
+- **Fair dice** — `DiceVerification` (the pure verifier and its report),
+  `DiceAuditRecorder` (the per-match observations it verifies).
+- **Reference agents** — `RandomPlayAgent` (a uniformly random legal play,
+  seed required), `PassiveCubeAgent` (never doubles, always takes).
+
+**`BgTournament.ReferenceBot/`** — the runnable console host over the SDK,
+the third-party door: `Program.cs` (parse, compose, serve), the validated
+CLI options and their `UsageException` funnel, the `ReferenceBot`
+composition seam, and `ExitCode`'s sysexits-style outcomes.
+
+**`BgTournament.Tests/`** — xUnit over every project, with
+`Microsoft.AspNetCore.Mvc.Testing` for in-process wire tests and a fake
+`TimeProvider` for clocks. Areas: the byte-for-byte goldens (wire, admin
+Api, journal; `PROTOCOL.md`'s examples among them) and their strictness and
+round-trip edges; the three mappings; the server over `TestServer`, driven
+through `ServerTestHarness`'s raw-wire `TestEngine` (handshake, roster,
+admin identity, enforcement, and the list, replay, live, audit and `.mat`
+endpoints, the last against `Goldens/`); clocks and fair dice;
+persistence and rehydration; the Core domain; the reference bot and its
+host; and full wire smokes — matches, one of them BgInference's engine over
+BgRLEngine's parity model, and a round-robin tournament.
 
 ## Architecture
 
