@@ -1,5 +1,6 @@
 using BgDataTypes_Lib;
 using BgGame_Lib;
+using BgMoveGen;
 using BgTournament.Protocol;
 
 namespace BgTournament.Tests;
@@ -135,45 +136,54 @@ public class WireMappingTests
     }
 
     [Fact]
-    public void ToUnresolvedPlay_PreservesMovesVerbatim()
+    public void ToHops_ReadsEachMoveAsItsHop_InTheOrderSent()
     {
         var moves = new[]
         {
             new WireMove { From = 25, To = 22 },
             new WireMove { From = 13, To = 10 },
+            new WireMove { From = 6, To = 0 },
         };
 
-        var play = moves.ToUnresolvedPlay();
+        var hops = moves.ToHops();
 
-        Assert.Equal(2, play.Count);
-        Assert.Equal(new Move(25, 22), play[0]);
-        Assert.Equal(new Move(13, 10), play[1]);
+        Assert.Equal([new Hop(25, 22), new Hop(13, 10), new Hop(6, 0)], hops);
     }
 
     [Fact]
-    public void ToUnresolvedPlay_Empty_IsTheEmptyPlay()
+    public void ToHops_Empty_IsNoHops()
     {
-        Assert.Equal(0, Array.Empty<WireMove>().ToUnresolvedPlay().Count);
+        Assert.Empty(Array.Empty<WireMove>().ToHops());
     }
 
     [Fact]
-    public void ToUnresolvedPlay_FiveMoves_Throws()
+    public void ToHops_CountsNothing_FiveMovesAreFiveHops()
     {
+        // How many moves a play has is the resolver's rule, not the mapping's:
+        // five hops read fine here and resolve to no play there.
         var moves = Enumerable.Repeat(new WireMove { From = 6, To = 5 }, 5).ToArray();
 
-        Assert.Throws<ArgumentException>(() => moves.ToUnresolvedPlay());
+        Assert.Equal(5, moves.ToHops().Count);
     }
 
     [Theory]
     [InlineData(0, 5)]   // from below range
     [InlineData(26, 5)]  // from above range
-    [InlineData(6, -1)]  // to below range (hit encoding is not wire-legal)
+    [InlineData(6, -1)]  // to below range (a hit mark is not wire-legal)
     [InlineData(6, 25)]  // to above range
-    public void ToUnresolvedPlay_OutOfRangeMove_Throws(int from, int to)
+    public void ToHops_OutOfRangeMove_IsRefusedByTheHop(int from, int to)
     {
         var moves = new[] { new WireMove { From = from, To = to } };
 
-        Assert.Throws<ArgumentException>(() => moves.ToUnresolvedPlay());
+        Assert.Throws<ArgumentOutOfRangeException>(() => moves.ToHops());
+    }
+
+    [Fact]
+    public void ToHops_NullMove_Throws()
+    {
+        var moves = new WireMove[] { new() { From = 6, To = 5 }, null! };
+
+        Assert.Throws<ArgumentException>(() => moves.ToHops());
     }
 
     [Fact]

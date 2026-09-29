@@ -1,5 +1,6 @@
 using BgDataTypes_Lib;
 using BgGame_Lib;
+using BgMoveGen;
 using BgTournament.Protocol;
 
 namespace BgTournament.Server;
@@ -23,9 +24,14 @@ namespace BgTournament.Server;
 /// <see cref="EngineDisconnectedException"/>. External cancellation
 /// propagates as <see cref="OperationCanceledException"/>, untranslated.</para>
 ///
-/// <para>An illegal-but-well-formed play is deliberately <em>not</em> policed
-/// here: the unresolved play is returned as-is and the runner — the single
-/// legality authority — raises the violation itself.</para>
+/// <para>A play reply is resolved here, and only here: its moves are read as
+/// mark-free single-die hops and resolved Strictly by
+/// <see cref="MoveGenerator.ResolvePlay"/> (PROTOCOL.md §6: each move is one
+/// legal single-die move, in any order and by any legal route). The play
+/// returned — and so applied, journalled, recorded and exported — is the
+/// generator's candidate, never the engine's spelling; a reply that resolves
+/// to no play is the engine's contract violation, raised here. The runner
+/// still validates the candidate it applies.</para>
 /// </summary>
 internal sealed class RemoteEngineAgent : IPlayAgent, ICubeAgent
 {
@@ -87,10 +93,10 @@ internal sealed class RemoteEngineAgent : IPlayAgent, ICubeAgent
             AgentContractViolationKind.IllegalPlay,
             cancellationToken).ConfigureAwait(false);
 
-        Play unresolved;
+        IReadOnlyList<Hop> hops;
         try
         {
-            unresolved = reply.Moves.ToUnresolvedPlay();
+            hops = reply.Moves.ToHops();
         }
         catch (ArgumentException ex)
         {
@@ -101,9 +107,12 @@ internal sealed class RemoteEngineAgent : IPlayAgent, ICubeAgent
                 ex);
         }
 
-        // Canonicalize (hit encoding restored); an unmatched play goes to the
-        // runner verbatim so the legality verdict stays single-sourced there.
-        return PlayResolver.Resolve(state.Board, die1, die2, unresolved) ?? unresolved;
+        return MoveGenerator.ResolvePlay(state.Board, hops, die1, die2)
+            ?? throw new AgentContractViolationException(
+                AgentContractViolationKind.IllegalPlay,
+                _seat,
+                $"Engine '{_channel.EngineName}' replied with moves that describe no legal play for dice " +
+                $"({die1}, {die2}), where each move is one legal single-die move: [{string.Join(", ", hops)}].");
     }
 
     /// <inheritdoc/>

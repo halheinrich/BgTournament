@@ -63,13 +63,24 @@ internal static class ServerHarness
     /// is awaited here so a failure surfaces in the test, not in a swallowed
     /// background task — then serve in the background until teardown.
     /// </summary>
-    public static async Task RunWellBehavedClientAsync(
-        WebApplicationFactory<Program> factory, string name, int seed, CancellationToken cancellationToken)
+    public static Task RunWellBehavedClientAsync(
+        WebApplicationFactory<Program> factory, string name, int seed, CancellationToken cancellationToken) =>
+        RunClientAsync(factory, name, new RandomPlayAgent(seed), new PassiveCubeAgent(), cancellationToken);
+
+    /// <summary>
+    /// Connect a real EngineClient over the given local agents — connect
+    /// awaited here, then served in the background until teardown.
+    /// </summary>
+    public static async Task RunClientAsync(
+        WebApplicationFactory<Program> factory,
+        string name,
+        IPlayAgent playAgent,
+        ICubeAgent cubeAgent,
+        CancellationToken cancellationToken)
     {
         var socket = await factory.Server.CreateWebSocketClient()
             .ConnectAsync(new Uri("ws://localhost/engine"), cancellationToken);
-        var client = new EngineClient.EngineClient(
-            new EngineIdentity(name), new RandomPlayAgent(seed), new PassiveCubeAgent());
+        var client = new EngineClient.EngineClient(new EngineIdentity(name), playAgent, cubeAgent);
         _ = Task.Run(
             async () =>
             {

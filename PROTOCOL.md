@@ -198,11 +198,16 @@ plays 8/5 6/5 (one checker from your 8-point using the 3, one from your
 ```
 
 **Move encoding.** Each move is `{from, to}` in your frame: `from` is 1–24, or
-25 to enter from your bar; `to` is 1–24, or 0 to bear the checker off. A turn
-has 0–4 moves (up to 4 when you roll doubles). Order does not matter. **Hits
-are not encoded** — if your move lands on an opponent blot, the server derives
-the hit. Moving one checker twice (e.g. 24/21 21/20 with a 3-1) is expressed
-as two moves.
+25 to enter from your bar; `to` is 1–24, or 0 to bear the checker off. **Each
+encoded move is one legal single-die move:** one checker moved by the number
+on one die of the roll, with some order of your moves in which each is a
+legal move of its die from the position the moves before it leave. So a turn
+has one move per die it uses — 0–4 moves, up to 4 when you roll doubles.
+Order does not matter. **Hits are not encoded** — if your move lands on an
+opponent blot, the server derives the hit. Moving one checker twice (e.g.
+24/21 21/20 with a 3-1) is expressed as two moves, by either route when both
+are open (24/23 23/20 plays the same checker the same way). A merged move
+(24/20 for that 3-1), or a move no die of the roll makes, is not a legal play.
 
 **Legality.** The server is the sole legality authority (standard backgammon;
 no variants in version 1). Your reply must be one of the legal plays for the
@@ -215,7 +220,8 @@ exists, reply with an empty `moves` array:
 ```
 
 (The server may also skip you entirely for closed-out dance turns — you simply
-won't be queried.) An illegal or unresolvable play forfeits the match; see §9.
+won't be queried.) An illegal play, including one not encoded as above,
+forfeits the match; see §9.
 
 **Roll index (fair mode).** When the match runs on provably-fair dice (§8), each
 `playQuery` also carries `rollIndex` — this roll's 0-based position in the
@@ -521,3 +527,9 @@ versions:
     unknown-field rule; a keyless hello is byte-identical to before — though
     an enforcing server rejects it, which is a server-side policy, not a wire
     change.
+  - *Clarification (play encoding):* §6 states explicitly that each encoded
+    move is one legal single-die move, and the server enforces it: a merged
+    move, or one no die of the roll makes, is an illegal play, while the
+    moves may come in any order and by either route. Version 1 already
+    expressed a checker moved twice as two moves; this states the rule that
+    implied. No field, value or message changes, so this stays version 1.

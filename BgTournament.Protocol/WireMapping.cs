@@ -1,5 +1,6 @@
 using BgDataTypes_Lib;
 using BgGame_Lib;
+using BgMoveGen;
 
 namespace BgTournament.Protocol;
 
@@ -102,48 +103,31 @@ public static class WireMapping
     }
 
     /// <summary>
-    /// Build a <see cref="Play"/> from wire moves, exactly as sent — without
-    /// hit encoding, because the wire carries none. The result is
-    /// <b>unresolved</b>: suitable only for the server's wire-resolution
-    /// match, a deliberately hit-insensitive hop-level projection (the wire's
-    /// own encoding altitude — not <see cref="Play"/> equality, which is
-    /// hit-sensitive), and never for applying to a board — applying it would
-    /// skip any hits. The server resolves it to the matching canonical
-    /// hit-encoded candidate before play continues.
+    /// Read wire moves as the mark-free single-die hops they state, in the
+    /// order sent — the input of <see cref="MoveGenerator.ResolvePlay"/>,
+    /// which resolves them to the legal play they describe (PROTOCOL.md §6:
+    /// each move is one legal single-die move, in any order). A hop cannot
+    /// carry a hit mark, just as a wire move cannot: hits are the board's.
+    /// Nothing here judges legality or counts the moves; that is the
+    /// resolver's.
     /// </summary>
     /// <exception cref="ArgumentNullException"><paramref name="moves"/> is null.</exception>
     /// <exception cref="ArgumentException">
-    /// More than 4 moves, or a move is out of range (<c>from</c> must be 1–25,
-    /// <c>to</c> must be 0–24).
+    /// A move is null, or its points are outside a hop's range — refused by
+    /// <see cref="Hop(int, int)"/>, whose message names the point.
     /// </exception>
-    public static Play ToUnresolvedPlay(this IReadOnlyList<WireMove> moves)
+    public static IReadOnlyList<Hop> ToHops(this IReadOnlyList<WireMove> moves)
     {
         ArgumentNullException.ThrowIfNull(moves);
-        if (moves.Count > 4)
+        var hops = new Hop[moves.Count];
+        for (int i = 0; i < hops.Length; i++)
         {
-            throw new ArgumentException(
-                $"A play has at most 4 moves, got {moves.Count}.", nameof(moves));
+            var move = moves[i]
+                ?? throw new ArgumentException($"Move {i} is null.", nameof(moves));
+            hops[i] = new Hop(move.From, move.To);
         }
 
-        var play = new Play();
-        foreach (var move in moves)
-        {
-            if (move.From is < 1 or > 25)
-            {
-                throw new ArgumentException(
-                    $"Move source must be 1–25 (25 = bar), got {move.From}.", nameof(moves));
-            }
-
-            if (move.To is < 0 or > 24)
-            {
-                throw new ArgumentException(
-                    $"Move destination must be 0–24 (0 = bear off), got {move.To}.", nameof(moves));
-            }
-
-            play.Add(new Move(move.From, move.To));
-        }
-
-        return play;
+        return hops;
     }
 
     /// <summary>The position's 26 counts, in the substrate's layout, as the wire board.</summary>

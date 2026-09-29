@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.WebSockets;
 using BgDataTypes_Lib;
 using BgGame_Lib;
+using BgMoveGen;
 using BgTournament.Protocol;
 using Microsoft.Extensions.Logging;
 
@@ -16,6 +17,11 @@ namespace BgTournament.EngineClient;
 /// <para>No perspective work happens here: every query state is already in
 /// this engine's frame (the unified frame rule), so it maps straight onto the
 /// local agent contract via <see cref="WireMapping"/>.</para>
+///
+/// <para>Every play reply conforms to PROTOCOL.md §6, one legal single-die
+/// move per encoded move: a legal play the local agent returns, in whatever
+/// encoding, is sent as the move generator's candidate it is the same play
+/// as.</para>
 ///
 /// <para>An exception thrown by a local agent propagates out of the serve
 /// loop and drops the connection — which the server correctly treats as a
@@ -162,15 +168,24 @@ public sealed class EngineClient
                 {
                     diceAudit.OnPlayQuery(query);
                     var clock = ClockOf(query);
+                    var state = query.State.ToGameState();
+
+                    // The agent is handed a live board it could change; the
+                    // reply is encoded from the position as queried.
+                    var start = state.Board.Copy();
                     var play = _clockAwarePlayAgent is not null && clock is not null
                         ? await _clockAwarePlayAgent
-                            .ChoosePlayAsync(query.State.ToGameState(), query.Die1, query.Die2, clock, cancellationToken)
+                            .ChoosePlayAsync(state, query.Die1, query.Die2, clock, cancellationToken)
                             .ConfigureAwait(false)
                         : await _playAgent
-                            .ChoosePlayAsync(query.State.ToGameState(), query.Die1, query.Die2, cancellationToken)
+                            .ChoosePlayAsync(state, query.Die1, query.Die2, cancellationToken)
                             .ConfigureAwait(false);
                     await channel.SendAsync(
-                        new PlayReplyMessage { RequestId = query.RequestId, Moves = play.ToWireMoves() },
+                        new PlayReplyMessage
+                        {
+                            RequestId = query.RequestId,
+                            Moves = ConformingMoves(start, play, query.Die1, query.Die2),
+                        },
                         cancellationToken).ConfigureAwait(false);
                     break;
                 }
@@ -273,6 +288,21 @@ public sealed class EngineClient
         {
             _clockAwareCubeAgent.OnTimeControlAnnounced(control);
         }
+    }
+
+    // The wire moves for the local agent's play: one legal single-die move per
+    // encoded move (PROTOCOL.md §6), whatever encoding the agent chose. A legal
+    // play goes out as the generator's candidate it is the same play as
+    // (BoardState.IsSamePlay's identity), whose moves are single-die moves in a
+    // legal order — so an agent returning a merged or reordered spelling of a
+    // legal play still conforms. A play that is no legal play goes out as the
+    // agent wrote it: the server is the legality authority, and its forfeit
+    // names the contract violation rather than a dropped connection.
+    private static IReadOnlyList<WireMove> ConformingMoves(BoardState start, Play play, int die1, int die2)
+    {
+        var candidates = MoveGenerator.GeneratePlays(start, die1, die2);
+        int index = start.IndexOfSamePlay(play, candidates);
+        return (index >= 0 ? candidates[index] : play).ToWireMoves();
     }
 
     // The query's clock reading, or null in the flat regime (whose queries

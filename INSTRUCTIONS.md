@@ -20,14 +20,17 @@ https://github.com/halheinrich/BgTournament — branch `main`.
 
 ## Depends on
 
-- **BgDataTypes_Lib** — `Play`/`Move`, `BoardState.FromMop`,
-  `CubeAction`/`CubeOwner`.
+- **BgDataTypes_Lib** — `Play`/`Move`, `BoardState` (`FromMop`,
+  `IndexOfSamePlay`), `BoardPosition`, `CubeAction`/`CubeOwner`.
 - **BgGame_Lib** — `IPlayAgent`/`ICubeAgent`, `GameState` (`FromPosition`,
   `OpponentView`, `Snapshot`), `MatchState.FromScores`,
   `GameSnapshot`/`MatchSnapshot`, `MatchRunner` + `SeededDiceSource`,
   `AgentContractViolationException`, transcripts.
-- **BgMoveGen** — `MoveGenerator.GeneratePlays`: the server's legality
-  universe (`PlayResolver`) and the reference bot's candidate set.
+- **BgMoveGen** — `MoveGenerator.ResolvePlay` and `Hop`: the server's one
+  wire-play resolver, fed by `WireMapping.ToHops`; `MoveGenerator.GeneratePlays`:
+  the SDK's conforming reply and the reference bot's candidate set.
+- **BgMatchFormat_Lib** — `MatExporter` and `MatchExport`: the server's
+  `.MAT` export (`MatExportProjection`).
 - **BgInference** (test-only) — the dogfooding smoke's real engine
   (`OnePlyPlayAgent` + `ThresholdCubeAgent` over BgRLEngine's parity model,
   read in place from the sibling checkout). Not a dependency of the shipped
@@ -106,8 +109,8 @@ and its derived dice seed) and `StandingsRow`.
   roster gate included), `EngineConnection` (the receive loop, one query in
   flight), `IEngineChannel` (the query seam tests fake), `EngineRegistry`
   (sessions by name), `RemoteEngineAgent` (the substrate agents over a
-  channel, failing with `EngineFailureExceptions`' taxonomy),
-  `PlayResolver` (a wire play to its canonical candidate).
+  channel, failing with `EngineFailureExceptions`' taxonomy, and resolving
+  each play reply to the generator's candidate).
 - **Hosting matches and tournaments** — `MatchService`,
   `TournamentService`, `MatchClock` (the per-match Fischer clock over the
   `TimeProvider` seam), `CountingDiceSource` (the roll index fair mode
@@ -152,8 +155,8 @@ composition seam, and `ExitCode`'s sysexits-style outcomes.
 Api, journal; `PROTOCOL.md`'s examples among them) and their strictness and
 round-trip edges; the three mappings; the server over `TestServer`, driven
 through `ServerTestHarness`'s raw-wire `TestEngine` (handshake, roster,
-admin identity, enforcement, and the list, replay, live, audit and `.mat`
-endpoints, the last against `Goldens/`); clocks and fair dice;
+admin identity, enforcement, play resolution, and the list, replay, live,
+audit and `.mat` endpoints, the last against `Goldens/`); clocks and fair dice;
 persistence and rehydration; the Core domain; the reference bot and its
 host; and full wire smokes — matches, one of them BgInference's engine over
 BgRLEngine's parity model, and a round-robin tournament.
@@ -192,23 +195,28 @@ single re-expression anywhere in the system, and the no-double-flip pin fails
 if a flip ever creeps into the mapping. In a cube-response query the state
 shows the pre-double cube (`centered` or `opponent`, never `you`).
 
-**Play encoding and canonicalization.** Wire moves are `{from, to}` single-die
-hops with hits deliberately not encoded — hits are board-derived facts the
-server reconstructs. `WireMapping.ToUnresolvedPlay` rebuilds the hit-less
-`Play` exactly as sent; `PlayResolver` resolves it to the generator's canonical
-hit-encoded candidate by an explicit wire-resolution projection (its private
-`WirePlayKey`): the unordered multiset of hit-stripped `(from, |to|)` hop
-pairs. The projection is **hit-insensitive** because the wire cannot express
-hits, and **route-sensitive** because two legal candidates can differ only in
-their hits (with a 3-2, 13/10\*/8 hits en route where 13/11/8 does not) — the
-hops the engine named are the only disambiguator. Substrate `Play` equality is
-deliberately not this match: it is fully hit-sensitive (a hit-less probe never
-equals a hitting candidate), and its canonical chain-merging collapses routes,
-so stripping candidate hits and comparing canonically could resolve the wrong
-candidate. The resolved candidate is what gets applied and recorded. An
-unmatched play is still handed to `MatchRunner` verbatim so the legality
-verdict stays single-sourced in the runner, whose validating `ApplyPlay`
-rejects it throw-before-mutate — the contract-violation forfeit.
+**Play encoding and resolution.** Wire moves are `{from, to}` hops with hits
+deliberately not encoded — hits are board-derived facts the server
+reconstructs. `PROTOCOL.md` §6 is the contract: each encoded move is one legal
+single-die move, in any order and by any legal route (Hal's rulings of
+2026-09-28 on halheinrich/backgammon#273, Strict among them; the protocol stays
+version 1). The server keeps no play matcher of its own. `WireMapping.ToHops`
+reads a reply's moves as BgMoveGen `Hop`s, which cannot express a hit mark, and
+`RemoteEngineAgent` resolves them through `MoveGenerator.ResolvePlay`, the one
+resolver, whose doc comment states the semantics. What it returns, the
+generator's candidate in its encoding and with its hit marks, is the only play
+that goes downstream: `MatchRunner` applies it, and the journal, replay, live
+feed and `.MAT` export record it. The engine's spelling never leaves the agent.
+A reply that resolves to no play is the engine's contract violation, raised
+where it is resolved (an `IllegalPlay` `AgentContractViolationException`, so a
+ContractViolation forfeit); the runner still validates the candidate it
+applies. The SDK keeps its side: `EngineClient` sends a legal play its local
+agent returns, in whatever encoding, as the generator's candidate it is the
+same play as (`BoardState.IndexOfSamePlay`), whose moves are single-die moves,
+and sends a play that is no legal play as written, for the server to judge.
+`WireMapping.ToWireMoves` reads `Move`'s hit sign itself to write a play's
+moves; it is booked with the other such consumers as
+halheinrich/backgammon#314.
 
 **Server shape.** `EngineSocketEndpoint` gates the handshake (version,
 non-empty unique name; every rejection is a named `rejected` message).
@@ -217,9 +225,10 @@ in-flight query (id-correlated), serializes sends, tolerates exactly the
 protocol's benign race (a reply to the most recently abandoned query is
 discarded), and closes the connection on any violation; its `Closed` task is
 the composition point for proactive disconnect handling. `RemoteEngineAgent`
-carries the forfeit taxonomy: malformed/out-of-range replies →
-`AgentContractViolationException` (decision-appropriate kind + seat, public
-ctors); timeout/flag fall/disconnect → engine-name-carrying server exceptions; external
+carries the forfeit taxonomy: malformed/out-of-range replies and play
+replies that resolve to no play → `AgentContractViolationException`
+(decision-appropriate kind + seat, public ctors); timeout/flag
+fall/disconnect → engine-name-carrying server exceptions; external
 cancellation passes untranslated. `MatchService` owns what the substrate
 deliberately does not: seat↔engine attribution, the v1 forfeit policy
 (forfeit the match), the proactive disconnect watch (first connection to end
@@ -552,10 +561,12 @@ untouched: PROTOCOL.md stays v1; engines see none of this.
 **Client shape.** `EngineClient.ServeAsync(WebSocket)` is the transport seam
 (any socket source, in-proc test servers included); `RunAsync(Uri)` wraps it
 with a `ClientWebSocket`. No perspective work client-side — the unified frame
-rule means query states map straight onto the local agent contract. A local
-agent exception drops the connection, which the server correctly reads as a
-forfeit. Clock-aware agents (see "Time controls") are detected per role and
-served the per-decision clock; plain agents are served exactly as before, and
+rule means query states map straight onto the local agent contract. Play
+replies conform to `PROTOCOL.md` §6 whatever encoding the local agent returns
+(see "Play encoding and resolution"). A local agent exception drops the
+connection, which the server correctly reads as a forfeit. Clock-aware
+agents (see "Time controls") are detected per role and served the
+per-decision clock; plain agents are served exactly as before, and
 every clocked query's pools are logged at `Debug` — the reference bot's
 `--verbosity debug` showcases the clock with no bot code involved.
 
@@ -631,7 +642,7 @@ public static class WireMapping     // the ONLY wire ↔ substrate bridge, frame
     public static WireGameState ToWireState(this GameSnapshot snapshot);
     public static GameState ToGameState(this WireGameState state);
     public static IReadOnlyList<WireMove> ToWireMoves(this Play play);
-    public static Play ToUnresolvedPlay(this IReadOnlyList<WireMove> moves); // NOT safe to apply
+    public static IReadOnlyList<Hop> ToHops(this IReadOnlyList<WireMove> moves); // ResolvePlay's input
 }
 
 public sealed class ProtocolSocket  // 1 complete text frame = 1 message; 64 KiB cap
@@ -873,13 +884,12 @@ public sealed record AuditTerminalEvent(..., MatchStatus Status,            // "
   concrete message type omits the `"type"` discriminator — the frame becomes
   undispatchable. The helper's base-typed parameter makes this structurally
   hard to hit; don't add parallel serialization paths.
-- **`ToUnresolvedPlay` output must never be applied to a board.** It carries
-  no hit encoding, so applying its moves verbatim would leave a hit blot
-  standing. `PlayResolver` is the sole sanctioned consumer (see "Play
-  encoding and canonicalization"), and the unmatched fallback stays safe
-  because the substrate's `ApplyPlay` rejects throw-before-mutate — a
-  hit-less encoding of a hitting play forfeits instead of corrupting the
-  board.
+- **Every play reply goes through `MoveGenerator.ResolvePlay`, and only its
+  candidate goes downstream.** Don't add a matcher here, don't validate
+  replies with `IsLegalPlay`, and never apply or record a play spelled from
+  the reply: BgMoveGen's Pitfalls say why each fails (its `ResolvePlay`
+  entries). A reply the resolver refuses is the engine's violation, raised in
+  `RemoteEngineAgent`; don't hand it to the runner for a verdict.
 - **No flips in `WireMapping`, ever.** The substrate's `OpponentView` is the
   system's only re-expression; a flip in the mapping double-applies the frame
   rule. The pin: `ToWireState_OfOpponentView_IsTheResponderFrame_NoDoubleFlip`.
@@ -888,9 +898,8 @@ public sealed record AuditTerminalEvent(..., MatchStatus Status,            // "
   rename reached through `WireMapping`) fails them, that is the alarm working:
   either fix the regression, or consciously version the protocol and move
   doc + goldens together.
-- **`GeneratePlays` expresses "no legal move" as one empty candidate**, not an
-  empty list. The empty wire play (`moves: []`) resolves against it by the
-  same key match as any play — don't add a special case.
+- **The pass needs no special case.** An empty `moves` array resolves when
+  passing is the only legal play, by `ResolvePlay`'s own contract.
 - **One in-flight query per engine is an invariant, not a hope.**
   `EngineConnection.QueryAsync` throws `InvalidOperationException` on overlap
   (a server bug); it holds because an engine is in at most one match (the
@@ -1031,9 +1040,9 @@ public sealed record AuditTerminalEvent(..., MatchStatus Status,            // "
   serializes `Play` moves with the raw sign-encoded destinations (negative =
   hit, 0 = bear-off) so rehydration rebuilds the exact substrate `Play`.
   Reusing `WireMapping.ToWireMoves` here would silently lose hits from every
-  stored transcript — the rebuilt plays would no longer even equal the played
-  ones (canonical `Play` equality is hit-sensitive), and the audit record
-  would lie.
+  stored transcript — the rebuilt plays would not be the ones the runner
+  applied (what makes a play valid from its position is
+  `BoardState.IsSamePlay`'s doc comment), and the audit record would lie.
 - **The damage policy is tail-lenient, prefix-strict** (see "Durable
   records"): only a journal's *final* unparseable line is a torn tail;
   anything earlier is corruption and the fold stops there. Never trust
