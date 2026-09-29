@@ -20,7 +20,7 @@ public class JournalMappingTests
     private static GameSnapshot Snapshot(
         SubstrateCubeOwner owner = SubstrateCubeOwner.Centered, int cubeSize = 1) =>
         new(
-            new[] { 0, -2, 0, 0, 0, 0, 5, 0, 3, 0, 0, 0, -5, 5, 0, 0, 0, -3, 0, -5, 0, 0, 0, 0, 2, 0 },
+            new BoardPosition([0, -2, 0, 0, 0, 0, 5, 0, 3, 0, 0, 0, -5, 5, 0, 0, 0, -3, 0, -5, 0, 0, 0, 0, 2, 0]),
             cubeSize, owner, new MatchSnapshot(MatchLength: 5, OnRollScore: 2, OpponentScore: 3, IsCrawford: false));
 
     /// <summary>Write the entry down, read the bytes back, rebuild the entry.</summary>

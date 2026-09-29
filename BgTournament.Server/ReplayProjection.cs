@@ -140,7 +140,7 @@ internal static class ReplayProjection
     {
         GameSnapshot seatOneFrame = frameSeat == MatchSeat.One ? snapshot : Flipped(snapshot);
         return new GamePosition(
-            seatOneFrame.Board, seatOneFrame.CubeSize, ToOwner(seatOneFrame.CubeOwner));
+            BoardCounts.Of(seatOneFrame.Board), seatOneFrame.CubeSize, ToOwner(seatOneFrame.CubeOwner));
     }
 
     /// <summary>
@@ -156,7 +156,7 @@ internal static class ReplayProjection
                     snapshot.Match.OnRollScore,
                     snapshot.Match.OpponentScore,
                     snapshot.Match.IsCrawford),
-                BoardState.FromMop(snapshot.Board),
+                new BoardState(snapshot.Board),
                 snapshot.CubeSize,
                 snapshot.CubeOwner)
             .OpponentView()

@@ -3,6 +3,7 @@ using BgGame_Lib;
 using BgTournament.Protocol;
 using BgTournament.Server;
 using Microsoft.Extensions.Time.Testing;
+using DecisionKind = BgTournament.Server.DecisionKind;
 using TimeControl = BgTournament.Api.TimeControl;
 
 namespace BgTournament.Tests;

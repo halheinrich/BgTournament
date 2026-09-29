@@ -6,6 +6,7 @@ using BgTournament.Server;
 using Microsoft.Extensions.Logging.Abstractions;
 using ApiCubeOwner = BgTournament.Api.CubeOwner;
 using GameResultKind = BgTournament.Api.GameResultKind;
+using Seat = BgTournament.Api.Seat;
 
 namespace BgTournament.Tests;
 
@@ -199,9 +200,9 @@ public class ReplayProjectionTests
         // Entry 0 was recorded in seat Two's frame (it won the opening):
         // the served board must be the substrate's own flip of the recorded
         // one. Entry 1 is seat One's frame: served verbatim.
-        var flipped = BoardState.FromMop(transcript[0].State.Board).FlippedCopy();
-        Assert.Equal(flipped.Points, entries[0].State.Board);
-        Assert.Equal(transcript[1].State.Board, entries[1].State.Board);
+        var flipped = new BoardState(transcript[0].State.Board).FlippedCopy();
+        Assert.Equal(flipped.ToPosition(), new BoardPosition(entries[0].State.Board.ToArray()));
+        Assert.Equal(transcript[1].State.Board, new BoardPosition(entries[1].State.Board.ToArray()));
 
         // And the flip is frame-only — cube facts carry through.
         Assert.Equal(transcript[0].State.CubeSize, entries[0].State.CubeValue);

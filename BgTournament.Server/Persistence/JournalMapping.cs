@@ -249,7 +249,7 @@ internal static class JournalMapping
 
     private static JournalGameState ToJournal(GameSnapshot state) =>
         new(
-            state.Board,
+            BoardCounts.Of(state.Board),
             state.CubeSize,
             ToJournal(state.CubeOwner),
             state.Match.MatchLength,
@@ -259,7 +259,7 @@ internal static class JournalMapping
 
     private static GameSnapshot ToSnapshot(JournalGameState state) =>
         new(
-            state.Board.ToArray(),
+            new BoardPosition(state.Board.ToArray()),
             state.CubeSize,
             ToCubeOwner(state.CubeOwner),
             new MatchSnapshot(state.MatchLength, state.OnRollScore, state.OpponentScore, state.IsCrawford));

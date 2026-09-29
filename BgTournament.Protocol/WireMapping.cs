@@ -18,6 +18,9 @@ namespace BgTournament.Protocol;
 /// </summary>
 public static class WireMapping
 {
+    /// <summary>The wire board's length: the 26 slots of the substrate's board layout.</summary>
+    private const int BoardSlots = 26;
+
     /// <summary>
     /// Express a game-and-match snapshot as the wire state carried by decision
     /// queries. Frame-preserving: the snapshot's on-roll-relative fields map
@@ -29,7 +32,7 @@ public static class WireMapping
         ArgumentNullException.ThrowIfNull(snapshot);
         return new WireGameState
         {
-            Board = snapshot.Board,
+            Board = CountsOf(snapshot.Board),
             CubeValue = snapshot.CubeSize,
             CubeOwner = snapshot.CubeOwner switch
             {
@@ -54,22 +57,23 @@ public static class WireMapping
     /// </summary>
     /// <exception cref="ArgumentNullException"><paramref name="state"/> is null.</exception>
     /// <exception cref="ArgumentException">
-    /// The board is not 26 elements, or the match fields are inconsistent
+    /// The board is not 26 elements or not a well-formed position (surfaced by
+    /// <see cref="BoardState.FromMop"/>), or the match fields are inconsistent
     /// (surfaced by <see cref="MatchState.FromScores"/>).
     /// </exception>
     /// <exception cref="ArgumentOutOfRangeException">A field is out of range (e.g. cube value &lt; 1).</exception>
     public static GameState ToGameState(this WireGameState state)
     {
         ArgumentNullException.ThrowIfNull(state);
-        if (state.Board.Count != 26)
+        if (state.Board.Count != BoardSlots)
         {
             throw new ArgumentException(
-                $"Wire board must have 26 elements, got {state.Board.Count}.", nameof(state));
+                $"Wire board must have {BoardSlots} elements, got {state.Board.Count}.", nameof(state));
         }
 
         var match = MatchState.FromScores(
             state.MatchLength, state.YourScore, state.OpponentScore, state.IsCrawford);
-        var board = BoardState.FromMop(state.Board);
+        var board = BoardState.FromMop(state.Board.ToArray());
         var owner = state.CubeOwner switch
         {
             WireCubeOwner.You => BgDataTypes_Lib.CubeOwner.OnRoll,
@@ -140,5 +144,13 @@ public static class WireMapping
         }
 
         return play;
+    }
+
+    /// <summary>The position's 26 counts, in the substrate's layout, as the wire board.</summary>
+    private static int[] CountsOf(BoardPosition position)
+    {
+        var counts = new int[BoardSlots];
+        position.CopyTo(counts);
+        return counts;
     }
 }

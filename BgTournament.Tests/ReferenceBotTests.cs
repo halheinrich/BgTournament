@@ -50,7 +50,7 @@ public class ReferenceBotTests
         var play = await agent.ChoosePlayAsync(state, die1, die2);
 
         var candidates = MoveGenerator.GeneratePlays(state.Board, die1, die2);
-        Assert.Contains(play, candidates);
+        Assert.True(state.Board.IndexOfSamePlay(play, candidates) >= 0, "the agent's play is a legal play");
     }
 
     [Fact]
@@ -66,7 +66,7 @@ public class ReferenceBotTests
                 var state = StateOver(OpeningBoard());
                 var firstPlay = await first.ChoosePlayAsync(state, die1, die2);
                 var secondPlay = await second.ChoosePlayAsync(state, die1, die2);
-                Assert.Equal(firstPlay, secondPlay);
+                Assert.True(firstPlay.IsSameEncoding(secondPlay), "the same seed chooses the same play");
             }
         }
     }

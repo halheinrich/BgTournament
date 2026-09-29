@@ -4,6 +4,7 @@ using BgMoveGen;
 using BgTournament.Api;
 using BgTournament.Server;
 using Microsoft.Extensions.Logging.Abstractions;
+using Seat = BgTournament.Api.Seat;
 
 namespace BgTournament.Tests;
 
