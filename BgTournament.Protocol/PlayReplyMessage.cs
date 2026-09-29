@@ -10,5 +10,5 @@ namespace BgTournament.Protocol;
 public sealed record PlayReplyMessage : ReplyMessage
 {
     /// <summary>The checker movements, 0–4 entries.</summary>
-    public required IReadOnlyList<WireMove> Moves { get; init; }
+    public required IReadOnlyList<WireMove> Moves { get; init => field = ImmutableCopy.Of(value); }
 }

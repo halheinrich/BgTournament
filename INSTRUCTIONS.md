@@ -61,10 +61,11 @@ bridge to the substrate types. Three areas:
 - **The single paths** — `WireProtocol`, the protocol version and the one
   (de)serialization path; `WireMapping`, the one set of wire ↔ substrate
   correspondences; `ProtocolSocket`, the frame rule (one text frame is one
-  message, 64 KiB cap).
+  message, 64 KiB cap); `ImmutableCopy`, the one way a message takes in a
+  list.
 
 **`BgTournament.Api/`** — the admin HTTP contracts: public, zero
-dependencies. Five areas:
+dependencies. Six areas:
 
 - **Requests and credentials** — the match, tournament and engine
   registration requests; `EngineAttestation`, provenance as declared;
@@ -85,6 +86,8 @@ dependencies. Five areas:
 - **Enum strictness** — `StrictJsonStringEnumConverter`, the
   string-token-exact converter the Api's enums and the server's journal
   shapes register.
+- **Immutable lists** — `ImmutableCopy`, the one way a record takes in a
+  list, and the field-order rule that goes with it (see Pitfalls).
 
 **`BgTournament.Core/`** — the execution-blind tournament domain, zero
 dependencies: `Tournament`, the round-robin aggregate (schedule, results,
@@ -1015,6 +1018,17 @@ public sealed record AuditTerminalEvent(..., MatchStatus Status,            // "
   is the alarm: a shape or enum-string drift in `BgTournament.Api` is a
   contract change for BgArena_Blazor. Note the Web-default encoder escapes
   apostrophes (`'` → `\u0027`) in detail strings — pinned deliberately.
+- **Every list a public shape holds is an immutable copy — and a redeclared
+  list property moves in the JSON.** No wire message or Api record hands out
+  a caller's array or a deserializer's `List<T>` behind `IReadOnlyList<T>`
+  (the collection rider of halheinrich/backgammon#273, pinned by
+  `CollectionImmutabilityTests`): each copies through its assembly's
+  `ImmutableCopy` in the property's `init` and, for a positional record, in
+  the property's initializer. Redeclaring a positional property puts it
+  after the synthesized ones in the serializer's field order, so where it is
+  not last, `[JsonPropertyOrder]` keeps the order `ApiGoldenTests` pins — a
+  new list member on a positional record needs the same care. The copy does
+  not validate: a null stays null, for the server's own validation to refuse.
 - **The journal format is durable — a byte change orphans files already on
   disk.** `JournalGoldenTests` pins every event and enum string; a deliberate
   change bumps `JournalCodec.SchemaVersion` and decides the migration story

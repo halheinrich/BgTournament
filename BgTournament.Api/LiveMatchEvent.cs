@@ -51,7 +51,12 @@ public sealed record LiveSnapshotEvent(
     int SeatOneScore,
     int SeatTwoScore,
     bool IsCrawford,
-    IReadOnlyList<GameEntry> Entries) : LiveMatchEvent;
+    IReadOnlyList<GameEntry> Entries) : LiveMatchEvent
+{
+    /// <summary>The <c>Entries</c> the constructor documents, held as an immutable copy of the list given.</summary>
+    public IReadOnlyList<GameEntry> Entries { get; init => field = ImmutableCopy.Of(value); } =
+        ImmutableCopy.Of(Entries);
+}
 
 /// <summary>
 /// A new game is starting. Fires before the opening roll — no board yet (the

@@ -17,7 +17,7 @@ public sealed record WireGameState
     /// toward 0), 25 is your bar. Positive counts are your checkers, negative
     /// are your opponent's.
     /// </summary>
-    public required IReadOnlyList<int> Board { get; init; }
+    public required IReadOnlyList<int> Board { get; init => field = ImmutableCopy.Of(value); }
 
     /// <summary>Current doubling-cube value: 1, 2, 4, 8, …</summary>
     public required int CubeValue { get; init; }

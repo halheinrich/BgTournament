@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace BgTournament.Api;
 
 /// <summary>
@@ -14,4 +16,10 @@ public sealed record StartTournamentRequest(
     int MatchLength,
     int MatchesPerPairing,
     int? Seed = null,
-    TimeControl? TimeControl = null);
+    TimeControl? TimeControl = null)
+{
+    /// <summary>The <c>Participants</c> the constructor documents, held as an immutable copy of the list given.</summary>
+    [JsonPropertyOrder(-1)] // JSON field order: see ImmutableCopy.
+    public IReadOnlyList<string>? Participants { get; init => field = ImmutableCopy.Of(value); } =
+        ImmutableCopy.Of(Participants);
+}

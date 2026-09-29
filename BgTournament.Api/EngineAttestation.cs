@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace BgTournament.Api;
 
 /// <summary>
@@ -19,4 +21,10 @@ namespace BgTournament.Api;
 public sealed record EngineAttestation(
     IReadOnlyList<string> Authors,
     string Origin,
-    string? DerivedFrom = null);
+    string? DerivedFrom = null)
+{
+    /// <summary>The <c>Authors</c> the constructor documents, held as an immutable copy of the list given.</summary>
+    [JsonPropertyOrder(-1)] // JSON field order: see ImmutableCopy.
+    public IReadOnlyList<string> Authors { get; init => field = ImmutableCopy.Of(value); } =
+        ImmutableCopy.Of(Authors);
+}

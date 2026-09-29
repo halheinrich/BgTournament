@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace BgTournament.Api;
 
 /// <summary>
@@ -17,4 +19,10 @@ namespace BgTournament.Api;
 public sealed record GamePosition(
     IReadOnlyList<int> Board,
     int CubeValue,
-    CubeOwner CubeOwner);
+    CubeOwner CubeOwner)
+{
+    /// <summary>The <c>Board</c> the constructor documents, held as an immutable copy of the list given.</summary>
+    [JsonPropertyOrder(-1)] // JSON field order: see ImmutableCopy.
+    public IReadOnlyList<int> Board { get; init => field = ImmutableCopy.Of(value); } =
+        ImmutableCopy.Of(Board);
+}

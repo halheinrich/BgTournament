@@ -26,4 +26,9 @@ public sealed record MatchGamesResponse(
     string EngineTwo,
     int MatchLength,
     MatchStatus Status,
-    IReadOnlyList<GameReplay> Games);
+    IReadOnlyList<GameReplay> Games)
+{
+    /// <summary>The <c>Games</c> the constructor documents, held as an immutable copy of the list given.</summary>
+    public IReadOnlyList<GameReplay> Games { get; init => field = ImmutableCopy.Of(value); } =
+        ImmutableCopy.Of(Games);
+}

@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace BgTournament.Api;
 
 /// <summary>A tournament record projection, as returned by the tournament endpoints.</summary>
@@ -14,8 +16,8 @@ namespace BgTournament.Api;
 /// <param name="Matches">The full schedule ledger, in schedule order.</param>
 /// <param name="StartedAtUtc">When the server created and began hosting the tournament (UTC).</param>
 /// <param name="EndedAtUtc">When the tournament reached its terminal status (UTC); null while running — and null on an <see cref="TournamentStatus.Interrupted"/> record, whose true end time died with the server.</param>
-public sealed record TournamentSummary(
-    string TournamentId,
+public sealed record TournamentSummary( // JSON field order: see ImmutableCopy.
+    [property: JsonPropertyOrder(-2)] string TournamentId,
     IReadOnlyList<string> Participants,
     int MatchLength,
     int MatchesPerPairing,
@@ -26,5 +28,19 @@ public sealed record TournamentSummary(
     string? Detail,
     IReadOnlyList<StandingEntry> Standings,
     IReadOnlyList<TournamentMatchEntry> Matches,
-    DateTimeOffset StartedAtUtc,
-    DateTimeOffset? EndedAtUtc);
+    [property: JsonPropertyOrder(1)] DateTimeOffset StartedAtUtc,
+    [property: JsonPropertyOrder(1)] DateTimeOffset? EndedAtUtc)
+{
+    /// <summary>The <c>Participants</c> the constructor documents, held as an immutable copy of the list given.</summary>
+    [JsonPropertyOrder(-1)] // JSON field order: see ImmutableCopy.
+    public IReadOnlyList<string> Participants { get; init => field = ImmutableCopy.Of(value); } =
+        ImmutableCopy.Of(Participants);
+
+    /// <summary>The <c>Standings</c> the constructor documents, held as an immutable copy of the list given.</summary>
+    public IReadOnlyList<StandingEntry> Standings { get; init => field = ImmutableCopy.Of(value); } =
+        ImmutableCopy.Of(Standings);
+
+    /// <summary>The <c>Matches</c> the constructor documents, held as an immutable copy of the list given.</summary>
+    public IReadOnlyList<TournamentMatchEntry> Matches { get; init => field = ImmutableCopy.Of(value); } =
+        ImmutableCopy.Of(Matches);
+}

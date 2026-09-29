@@ -21,4 +21,9 @@ public sealed record MatchAuditResponse(
     string EngineTwo,
     MatchStatus Status,
     string? Integrity,
-    IReadOnlyList<AuditEvent> Events);
+    IReadOnlyList<AuditEvent> Events)
+{
+    /// <summary>The <c>Events</c> the constructor documents, held as an immutable copy of the list given.</summary>
+    public IReadOnlyList<AuditEvent> Events { get; init => field = ImmutableCopy.Of(value); } =
+        ImmutableCopy.Of(Events);
+}

@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace BgTournament.Api;
 
 /// <summary>
@@ -24,4 +26,9 @@ public sealed record GameReplay(
     int SeatTwoScore,
     bool IsCrawford,
     IReadOnlyList<GameEntry> Entries,
-    GamePosition FinalState);
+    [property: JsonPropertyOrder(1)] GamePosition FinalState) // JSON field order: see ImmutableCopy.
+{
+    /// <summary>The <c>Entries</c> the constructor documents, held as an immutable copy of the list given.</summary>
+    public IReadOnlyList<GameEntry> Entries { get; init => field = ImmutableCopy.Of(value); } =
+        ImmutableCopy.Of(Entries);
+}

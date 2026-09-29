@@ -39,7 +39,12 @@ public sealed record PlayEntry(
     GamePosition State,
     int Die1,
     int Die2,
-    IReadOnlyList<PlayMove> Moves) : GameEntry(Actor, State);
+    IReadOnlyList<PlayMove> Moves) : GameEntry(Actor, State)
+{
+    /// <summary>The <c>Moves</c> the constructor documents, held as an immutable copy of the list given.</summary>
+    public IReadOnlyList<PlayMove> Moves { get; init => field = ImmutableCopy.Of(value); } =
+        ImmutableCopy.Of(Moves);
+}
 
 /// <summary>
 /// A double offered at the actor's pre-roll cube window. Offering is the
