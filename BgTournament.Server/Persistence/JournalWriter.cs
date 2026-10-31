@@ -7,10 +7,11 @@ namespace BgTournament.Server.Persistence;
 /// <summary>
 /// One journal's write pump: an unbounded channel fed by non-blocking
 /// <see cref="Append"/> calls and drained by a single background task that
-/// serializes each event to a JSONL line and flushes it — one line, one flush
-/// (the settled durability discipline: an event survives a process crash the
-/// moment it is written). The sink is opened lazily on the pump, so no caller
-/// ever waits on disk I/O — the match loop least of all.
+/// serializes each event to a JSONL line and flushes it — one line, one flush,
+/// out of process buffers to the operating system and no further: queued or
+/// unflushed events can be lost with the process, and this is no power-loss
+/// guarantee (INSTRUCTIONS.md, "Durable records"). The sink is opened lazily on
+/// the pump, so no caller ever waits on disk I/O — the match loop least of all.
 ///
 /// <para><b>Contained failure.</b> A sink or write error is logged loudly
 /// once, the journal stops persisting (subsequent events are drained and
@@ -69,8 +70,8 @@ internal sealed class JournalWriter<TEvent>
             {
                 await writer.WriteLineAsync(serialize(journalEvent));
 
-                // Flush per event: out of the process (and its buffers) the
-                // moment it happened. StreamWriter.Flush flushes the sink too.
+                // Flush per event, to the operating system and no further (see
+                // the class summary). StreamWriter.Flush flushes the sink too.
                 await writer.FlushAsync();
             }
         }

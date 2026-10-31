@@ -662,9 +662,12 @@ never stored.
 **The write path.** `MatchJournal` is a sibling `IMatchObserver` beside `LiveMatch`
 under a `CompositeMatchObserver`, with the same discipline: a journal fault logs
 loudly and stops journaling while the match plays on. It drains through a
-per-journal background `JournalWriter` that flushes per event, the settled
-durability tier: an event survives process death, and power loss costs only a
-tail, which the fold tolerates.
+per-journal background `JournalWriter`, so no caller waits on disk, the match
+loop least of all. The pump writes and flushes each event out of process buffers
+to the operating system, and no further. A process crash loses no event already
+flushed; events still queued or not yet flushed can be lost if the process dies;
+and this is no power-loss guarantee. Recovery applies the damage policy below to
+whatever journal remains.
 
 **The layering is strict SSOT.** Journal DTOs are their own family with
 journal-local enums (`JournalCodec` the only (de)serialization path,
