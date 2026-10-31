@@ -353,8 +353,8 @@ internal sealed class MatchService
             Journal = MatchJournal.Create(_store, matchId, _time, _logger),
         };
 
-        // The journal header is the record's durable identity — written first,
-        // before anything can happen to the match.
+        // The journal header is the record's identity — queued first, so the
+        // pump writes it before any later event.
         record.Journal!.RecordCreated(record);
         _records[record.MatchId] = record;
         return record;

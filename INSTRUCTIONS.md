@@ -525,11 +525,12 @@ file, keep `IJournalStore`'s create-once contract *and* the damage policy intact
 a write-once file's torn tail is always a true tail, whereas reopen-and-append
 would turn one boot's torn tail into the next boot's mid-file corruption.
 
-Unlike the observer journals, `RosterJournal` writes synchronously and a failure
-*fails the mutation*: the credential must be durable before the show-once key is
-revealed. Runtime mutations and the startup fold apply events through the one
-`RosterService.Apply` transition path, so a rehydrated roster cannot differ from
-the live one.
+Unlike the observer journals, `RosterJournal` writes and flushes each event
+synchronously, to the operating system, before the state changes or the show-once
+key is returned, and a write failure *fails the mutation*. That ordering is the
+guarantee; a flush goes no further (see "The write path"). Runtime mutations and
+the startup fold apply events through the one `RosterService.Apply` transition
+path, so a rehydrated roster cannot differ from the live one.
 
 Deactivation is terminal, and deliberately so: no event type can resurrect an
 entry. If a deactivated engine ever needs a comeback, design it consciously
@@ -647,9 +648,12 @@ cache-warming format. Every event carries an `at` timestamp from the DI
 `TimeProvider`.
 
 The first line is always the `created` header: identity, configuration,
-`schemaVersion` and, in fair mode, the *escrowed* `DiceKey`, which must be on disk
-before terminal or an interrupted match could never reveal it. The commitment
-stays derived, never stored.
+`schemaVersion` and, in fair mode, the *escrowed* `DiceKey`, so that an interrupted
+match can still reveal it. The header is the first event queued on the background
+pump, which writes it before any later event, and nothing waits for it before play
+starts: recovering an interrupted match's key depends on the header having been
+flushed before the process died, and the damage policy then reads what remains. The
+commitment stays derived, never stored.
 
 Match events mirror the observer flow at full substrate fidelity (`started`,
 `gameStarted`, `play`/`cube`/`gameEnded` transcript entries in their native
@@ -1004,7 +1008,7 @@ configuration never holds the showcase output hostage.
   deleting one rewrites history.
 - **`RosterJournal` is synchronous and throwing on purpose.** The `JournalWriter`
   discipline exists for observer callbacks on the match loop; roster mutations are
-  admin-paced and their durability is load-bearing. Don't "fix" the roster onto
+  admin-paced and their write order is load-bearing. Don't "fix" the roster onto
   `JournalWriter`: a dropped registration event with an issued key is an engine that
   can never authenticate.
 - **Don't mutate roster entry state anywhere but `RosterService.Apply`.** The

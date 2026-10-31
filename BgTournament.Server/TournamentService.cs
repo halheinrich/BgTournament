@@ -236,8 +236,8 @@ internal sealed class TournamentService
             fairDice: seed is null, timeControl, _time.GetUtcNow(),
             TournamentJournal.Create(_store, tournamentId, _time, _logger), createdBy);
 
-        // The journal header is the record's durable identity — written first,
-        // before anything can happen to the tournament.
+        // The journal header is the record's identity — queued first, so the
+        // pump writes it before any later event.
         record.Journal!.RecordCreated(record);
         _records[record.TournamentId] = record;
 

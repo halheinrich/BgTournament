@@ -54,10 +54,11 @@ internal enum RosterError
 /// history that <em>is</em> the roster across restarts (rehydration folds it
 /// back through <see cref="Restore"/> before anything serves).
 ///
-/// <para><b>Durable before answered.</b> Every mutation journals its event
+/// <para><b>Journaled before answered.</b> Every mutation journals its event
 /// synchronously (see <see cref="RosterJournal"/>) <em>before</em> touching
 /// in-memory state or returning — a registration response carries the
-/// show-once key, so the credential must be on disk before the key is shown.
+/// show-once key, so the credential is flushed to the operating system before
+/// the key is shown.
 /// A journal failure fails the mutation; state never runs ahead of the
 /// record.</para>
 ///
@@ -194,7 +195,7 @@ internal sealed class RosterService : IDisposable
                     $"An engine named '{name}' is already registered (roster names are unique for all time).");
             }
 
-            // Durable before answered: the journal write precedes both the
+            // Journaled before answered: the journal write precedes both the
             // state change and the show-once response; a write failure fails
             // the registration with nothing half-done.
             var journalEvent = JournalMapping.ToRegisteredEvent(

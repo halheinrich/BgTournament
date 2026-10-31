@@ -9,11 +9,13 @@ namespace BgTournament.Server.Persistence;
 /// <para><b>Deliberately not a <see cref="JournalWriter{TEvent}"/>.</b> The
 /// channel-and-pump writer exists for observer callbacks on the match loop,
 /// which must never block or throw; it buys that with fire-and-forget
-/// durability. Roster mutations are the opposite trade: they run on
-/// admin-request threads with no latency constraint, and durability is
+/// writes. Roster mutations are the opposite trade: they run on
+/// admin-request threads with no latency constraint, and the write order is
 /// load-bearing — a registration response carries the show-once engine key,
-/// so the credential must be on disk <em>before</em> the key is shown (a
-/// token the roster forgot in a crash would authenticate nothing, ever).
+/// so the credential is written and flushed, to the operating system,
+/// <em>before</em> the key is shown (a token the roster forgot in a crash
+/// would authenticate nothing, ever; INSTRUCTIONS.md, "The write path", says
+/// how far a flush goes).
 /// A write failure therefore <em>throws</em>, failing the admin request —
 /// fail-the-mutation, never fail-silent.</para>
 ///
@@ -35,7 +37,7 @@ internal sealed class RosterJournal : IDisposable
     }
 
     /// <summary>
-    /// Append one event durably: the segment (created on the first append of
+    /// Append one event synchronously: the segment (created on the first append of
     /// this session, headed by a version-stamped <see cref="RosterStartedEvent"/>)
     /// has the line flushed before this method returns.
     /// </summary>
