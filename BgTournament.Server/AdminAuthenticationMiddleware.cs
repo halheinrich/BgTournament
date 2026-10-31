@@ -37,7 +37,7 @@ internal sealed class AdminAuthenticationMiddleware
     public async Task InvokeAsync(HttpContext context)
     {
         // The engine wire is not the admin surface: its identity story is the
-        // hello handshake (and session 3's engineKey), never an HTTP header.
+        // hello handshake (and the roster's engineKey), never an HTTP header.
         if (context.Request.Path.StartsWithSegments("/engine"))
         {
             await _next(context);

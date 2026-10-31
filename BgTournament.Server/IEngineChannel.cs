@@ -24,7 +24,7 @@ internal interface IEngineChannel
     /// <exception cref="EngineDisconnectedException">The connection ended before the reply.</exception>
     /// <exception cref="OperationCanceledException">
     /// <paramref name="cancellationToken"/> fired; the outstanding query is
-    /// abandoned (a late reply is discarded, per PROTOCOL.md §8).
+    /// abandoned (a late reply is discarded, per PROTOCOL.md §9).
     /// </exception>
     Task<TReply> QueryAsync<TReply>(
         Func<string, QueryMessage> queryFactory,

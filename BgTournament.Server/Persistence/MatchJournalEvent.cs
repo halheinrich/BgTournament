@@ -5,7 +5,7 @@ namespace BgTournament.Server.Persistence;
 /// <summary>
 /// Base type for every event in a match journal — one JSON object per JSONL
 /// line, carrying a <c>"type"</c> discriminator, written in match order so the
-/// file is an ordered audit record (the future arbitration log reads this
+/// file is an ordered audit record (the arbitration log reads this
 /// vocabulary). Serialize and deserialize exclusively through
 /// <see cref="JournalCodec"/>.
 ///
@@ -176,7 +176,7 @@ internal sealed record MatchClockEvent(
 
 /// <summary>
 /// A late reply to an abandoned query was discarded (schema v2) — the benign
-/// race of PROTOCOL.md §8, previously invisible: the match moved on (timeout,
+/// race of PROTOCOL.md §9, previously invisible: the match moved on (timeout,
 /// flag fall, cancellation) while this reply was in flight. Evidence that the
 /// engine did answer, just too late to count.
 /// </summary>

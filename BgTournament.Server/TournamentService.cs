@@ -82,10 +82,10 @@ internal sealed class TournamentRecord
     /// <summary>
     /// Whether the tournament's matches run on fair-mode (committed, verifiable)
     /// dice — true when no explicit tournament seed was given. Independent of the
-    /// <see cref="Tournament"/> seed: that seed governs schedule <em>structure</em>
-    /// (pairings, seat alternation, per-match seeds) in every mode; it only drives
-    /// the <em>dice</em> in explicit-seed mode. In fair mode each hosted match gets
-    /// its own freshly generated key, so the scheduled seeds are structural, not dead.
+    /// <see cref="Tournament"/> seed, which derives every scheduled match's seed in
+    /// every mode and drives the <em>dice</em> only in explicit-seed mode; pairings
+    /// and seats do not depend on it. In fair mode each hosted match gets its own
+    /// freshly generated key, so the scheduled seeds are recorded data, not dice.
     /// </summary>
     public bool FairDice { get; }
 
@@ -338,7 +338,7 @@ internal sealed class TournamentService
                 }
 
                 // Fair mode: a fresh committed key per match (the scheduled seed
-                // stays structural). Seeded mode: the scheduled seed drives the
+                // is only recorded). Seeded mode: the scheduled seed drives the
                 // dice. The tournament's one time control (if any) governs every
                 // scheduled match, each on its own fresh clock.
                 var match = _matches.CreateHostedMatch(

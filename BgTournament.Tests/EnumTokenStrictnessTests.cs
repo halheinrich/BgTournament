@@ -7,7 +7,7 @@ using BgTournament.Server.Persistence;
 namespace BgTournament.Tests;
 
 /// <summary>
-/// Pins the string-token-exact contract of every attribute-registered enum
+/// Pins that every attribute-registered enum is strict about token kind, not case
 /// (halheinrich/backgammon#164): the readers of the admin Api and the durable
 /// journal accept the pinned member names and reject numeric ordinals, so no
 /// payload can silently re-couple to member declaration numbering. The wire's

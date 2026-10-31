@@ -3,7 +3,7 @@ using System.Text.Json.Serialization;
 namespace BgTournament.Api;
 
 /// <summary>
-/// The string-token-exact enum converter: a
+/// The enum converter strict about token kind, not case: a
 /// <see cref="JsonStringEnumConverter{TEnum}"/> that rejects numeric tokens on
 /// read (and refuses to write an undefined value as a number), for
 /// attribute-form registration — where the base type's
@@ -25,6 +25,9 @@ namespace BgTournament.Api;
 /// camelCased. Name matching on read stays case-insensitive — the base
 /// converter's behavior, which has no knob to change — so the strictness
 /// closed here is token kind, not case.</para>
+///
+/// <para>A copy of BgDataTypes_Lib's converter of the same name; reusing that
+/// one is halheinrich/backgammon#429.</para>
 /// </summary>
 /// <typeparam name="TEnum">The enum type the converter handles.</typeparam>
 public sealed class StrictJsonStringEnumConverter<TEnum> : JsonStringEnumConverter<TEnum>

@@ -2,7 +2,8 @@ namespace BgTournament.Core;
 
 /// <summary>
 /// One match in a tournament's schedule: which participant takes which seat,
-/// and the dice seed the match must be played with.
+/// and the dice seed derived for the match. A host that plays it on other dice
+/// keeps the seed as a recorded value.
 /// </summary>
 public sealed record ScheduledMatch
 {

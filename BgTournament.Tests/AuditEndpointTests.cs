@@ -512,7 +512,7 @@ public class AuditEndpointTests
     /// abandoned (caller cancellation), the engine's reply lands late, and
     /// <see cref="EngineConnection.LateReplyDiscarded"/> reports exactly the
     /// abandoned request id — the previously invisible benign race of
-    /// PROTOCOL.md §8, now observable.
+    /// PROTOCOL.md §9, now observable.
     /// </summary>
     [Fact]
     public async Task LateReplyDiscard_RaisesTheEvidenceHook()

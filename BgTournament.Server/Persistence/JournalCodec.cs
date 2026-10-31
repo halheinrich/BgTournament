@@ -52,8 +52,9 @@ internal static class JournalCodec
     public const int ServerSchemaVersion = 2;
 
     /// <summary>
-    /// The roster-journal schema version — the fourth independently versioned
-    /// durable format. Unlike the server journal, roster segments <em>are</em>
+    /// The roster-journal schema version — the third independently versioned
+    /// durable format, after the match/tournament format and the server
+    /// journal's. Unlike the server journal, roster segments <em>are</em>
     /// folded (the roster's state is their fold), so an unknown version must
     /// be detected and the segment skipped whole before anything folds.
     /// </summary>

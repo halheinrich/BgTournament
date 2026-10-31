@@ -116,7 +116,6 @@ internal sealed class MatchRecord
     /// retained in memory for completed matches. Absent on forfeit: the
     /// runner's throw discards partial state. The games that <em>did</em>
     /// finish before an interruption are retained on <see cref="Live"/>.
-    /// Export formats are a later arc.
     /// </summary>
     public MatchResult? Result { get; set; }
 
@@ -609,7 +608,7 @@ internal sealed class MatchService
     {
         // Points as attested by a completed run; a forfeit decides the match
         // itself, and v1 reports 0–0 for it (partial scores are lost with the
-        // runner's throw — flagged limitation).
+        // runner's throw: halheinrich/backgammon#485).
         int ownPoints = (seat == 1 ? record.SeatOneScore : record.SeatTwoScore) ?? 0;
         int opponentPoints = (seat == 1 ? record.SeatTwoScore : record.SeatOneScore) ?? 0;
         string ownName = seat == 1 ? record.EngineOne : record.EngineTwo;

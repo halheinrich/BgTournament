@@ -16,7 +16,7 @@ namespace BgTournament.Server;
 /// <see cref="EngineProtocolViolationException"/> (one-in-flight makes the
 /// offending frame attributable to the query); connection loss fails it with
 /// <see cref="EngineDisconnectedException"/>; caller cancellation abandons the
-/// query and tolerates its late reply once (PROTOCOL.md §8's benign race).
+/// query and tolerates its late reply once (PROTOCOL.md §9's benign race).
 /// Any violation also closes the connection — after malformed traffic the
 /// stream is not trustworthy.</para>
 /// </summary>
@@ -57,7 +57,7 @@ internal sealed class EngineConnection : IEngineChannel
 
     /// <summary>
     /// Raised with the request id when a late reply to the most recently
-    /// abandoned query is discarded (PROTOCOL.md §8's benign race) — the
+    /// abandoned query is discarded (PROTOCOL.md §9's benign race) — the
     /// arbitration-evidence hook: proof the engine did answer, just too late
     /// to count. Raised on the receive loop; handlers obey the observer
     /// discipline — fast, in-memory, and non-throwing (the match host's
@@ -227,7 +227,7 @@ internal sealed class EngineConnection : IEngineChannel
                 }
                 else if (_lastAbandonedRequestId == reply.RequestId)
                 {
-                    // The benign race of PROTOCOL.md §8: the match moved on
+                    // The benign race of PROTOCOL.md §9: the match moved on
                     // while this reply was in flight. Tolerated once.
                     _lastAbandonedRequestId = null;
                     discard = true;

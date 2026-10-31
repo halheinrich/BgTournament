@@ -30,7 +30,7 @@ internal abstract record TournamentJournalEvent([property: JsonPropertyOrder(-1)
 /// <param name="Participants">Participants in seeding order.</param>
 /// <param name="MatchLength">Match length in points for every scheduled match.</param>
 /// <param name="MatchesPerPairing">How many times each pair meets.</param>
-/// <param name="Seed">The tournament seed — schedule structure in every mode, dice only in explicit-seed mode.</param>
+/// <param name="Seed">The tournament seed — the source of every scheduled match's seed in every mode, dice only in explicit-seed mode.</param>
 /// <param name="FairDice">Whether the tournament's matches run on fair-mode (committed, verifiable) dice.</param>
 /// <param name="TimeControl">The Fischer time control every scheduled match runs under, or null for the flat regime.</param>
 /// <param name="CreatedBy">

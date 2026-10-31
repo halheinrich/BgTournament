@@ -7,7 +7,7 @@ namespace BgTournament.Tests;
 /// Fair mode at the tournament layer: an unseeded tournament runs every match on
 /// its own freshly generated committed key, while a seeded tournament keeps the
 /// reproducible <c>SeededDiceSource</c> (no commitment). The scheduled per-match
-/// seed stays structural in both — it is never the fair-mode dice driver.
+/// seed is recorded in both — it is never the fair-mode dice driver.
 /// </summary>
 public class TournamentFairDiceTests
 {
