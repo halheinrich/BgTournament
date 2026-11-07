@@ -8,6 +8,6 @@ namespace BgTournament.Protocol;
 /// </summary>
 public sealed record CubeOfferQueryMessage : QueryMessage
 {
-    /// <summary>The position and match context, in your frame; you are on roll.</summary>
+    /// <summary>The position and match context, in the on-roll player's frame — yours: you are on roll.</summary>
     public required WireGameState State { get; init; }
 }

@@ -33,21 +33,21 @@ public class ReplayProjectionTests
     private sealed class FirstPlayAgent : IPlayAgent
     {
         public ValueTask<Play> ChoosePlayAsync(
-            GameState state, int die1, int die2, CancellationToken cancellationToken = default) =>
-            ValueTask.FromResult(MoveGenerator.GeneratePlays(state.Board, die1, die2)[0]);
+            GameSnapshot state, int die1, int die2, CancellationToken cancellationToken = default) =>
+            ValueTask.FromResult(MoveGenerator.GeneratePlays(new BoardState(state.Board), die1, die2)[0]);
     }
 
     /// <summary>Delegates both cube decisions to lambdas.</summary>
     private sealed class DelegateCubeAgent(
-        Func<GameState, CubeAction> offer,
-        Func<GameState, CubeAction> response) : ICubeAgent
+        Func<GameSnapshot, CubeAction> offer,
+        Func<GameSnapshot, CubeAction> response) : ICubeAgent
     {
         public ValueTask<CubeAction> ChooseOfferAsync(
-            GameState state, CancellationToken cancellationToken = default) =>
+            GameSnapshot state, CancellationToken cancellationToken = default) =>
             ValueTask.FromResult(offer(state));
 
         public ValueTask<CubeAction> ChooseResponseAsync(
-            GameState state, CancellationToken cancellationToken = default) =>
+            GameSnapshot state, CancellationToken cancellationToken = default) =>
             ValueTask.FromResult(response(state));
     }
 

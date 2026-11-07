@@ -204,7 +204,7 @@ public class PlayResolutionWireTests
     /// </summary>
     private static (Play Candidate, WireMove[] Reply)? OtherRouteOf(PlayQueryMessage query, bool hitsOnLanding)
     {
-        var board = query.State.ToGameState().Board;
+        var board = new BoardState(query.State.ToGameSnapshot().Board);
         foreach (var (candidate, from, to, firstDie) in ChainsOf(query, board))
         {
             int via = from - (query.Die1 + query.Die2 - firstDie);
@@ -223,7 +223,7 @@ public class PlayResolutionWireTests
     /// </summary>
     private static WireMove[]? NonConformingSpellingOf(PlayQueryMessage query, bool merged)
     {
-        var board = query.State.ToGameState().Board;
+        var board = new BoardState(query.State.ToGameSnapshot().Board);
         foreach (var (_, from, to, _) in ChainsOf(query, board))
         {
             if (merged)
@@ -300,7 +300,7 @@ public class PlayResolutionWireTests
         public int MergedCount => Volatile.Read(ref _merged);
 
         public async ValueTask<Play> ChoosePlayAsync(
-            GameState state, int die1, int die2, CancellationToken cancellationToken = default)
+            GameSnapshot state, int die1, int die2, CancellationToken cancellationToken = default)
         {
             var play = await _inner.ChoosePlayAsync(state, die1, die2, cancellationToken);
             if (play.Count == 2 && play[0].ToPt > 0 && play[0].ToPt == play[1].FrPt)
@@ -317,7 +317,7 @@ public class PlayResolutionWireTests
     private sealed class FixedPlayAgent(Play play) : IPlayAgent
     {
         public ValueTask<Play> ChoosePlayAsync(
-            GameState state, int die1, int die2, CancellationToken cancellationToken = default) =>
+            GameSnapshot state, int die1, int die2, CancellationToken cancellationToken = default) =>
             ValueTask.FromResult(play);
     }
 }

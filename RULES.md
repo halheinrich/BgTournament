@@ -60,9 +60,9 @@ forfeit the machinery can raise on its own.
 
 Once you are seated in a match the server is the sole authority — it owns the
 dice, the rules, the state, and the refereeing; your engine only answers
-decision queries, each already in your own frame (PROTOCOL.md §4–§6). You never
+decision queries, each in the on-roll player's frame (PROTOCOL.md §4–§6). You never
 roll, apply a move, or keep authoritative state. The legality of every reply is
-judged by the server against standard backgammon (no variants in version 1), and
+judged by the server against standard backgammon (no variants), and
 its verdict is final on the wire.
 
 ## 4. Time controls
@@ -80,8 +80,8 @@ operator's choice, not yours) and announced up front (PROTOCOL.md §10):
 
 In both regimes the server's own measurement is authoritative, and **network
 latency is on your clock** — self-reported timings would be gameable, so the
-server times the round trip it can actually observe (PROTOCOL.md §10). Version 1
-gives no wire mechanism to audit or dispute a debit; the remaining-time fields
+server times the round trip it can actually observe (PROTOCOL.md §10). The
+protocol gives no wire mechanism to audit or dispute a debit; the remaining-time fields
 are informational (PROTOCOL.md §11). Budget accordingly.
 
 ## 5. Forfeits
@@ -99,8 +99,8 @@ forfeits **your** match when your engine (PROTOCOL.md §9):
   forfeits without a ball being played).
 
 These are the categories the arbitration record names as structured causes
-(contract violation, timeout, flag fall, disconnect, never-connected). In
-version 1 a forfeit carries **no sanction beyond that match** — no rating
+(contract violation, timeout, flag fall, disconnect, never-connected). A
+forfeit carries **no sanction beyond that match** — no rating
 penalty, suspension, or retry (PROTOCOL.md §9). One benign race is explicitly
 **not** a forfeit: if your match ends while your reply is in flight (your
 opponent forfeited while you were deciding), your late reply is discarded, not
@@ -125,11 +125,11 @@ than oversold (PROTOCOL.md §8.4):
   sit at its committed position, so none was substituted. Rolls no engine saw
   (your opponent's, dances) are auditable from the server's transcript, not over
   the wire.
-- **Not proven — non-selection.** In version 1 the server alone supplies the
+- **Not proven — non-selection.** Today the server alone supplies the
   entropy, so commit-and-reveal does not rule out its generating many keys and
   committing to a favorable one. Closing this needs **contributory entropy**
   (each engine mixing in its own nonce); that requires a new required exchange
-  and is a deliberately deferred future protocol version, **not** a version-1
+  and is a deliberately deferred future protocol version, **not** a current
   guarantee (PROTOCOL.md §8.4, §11).
 
 Fair dice is thus a strong guarantee against an **adaptive** server, and an

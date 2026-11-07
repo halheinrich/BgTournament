@@ -3,6 +3,7 @@ using System.Net.Http.Json;
 using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
+using BgDataTypes_Lib;
 using BgGame_Lib;
 using BgInference;
 using BgMoveGen;
@@ -441,8 +442,8 @@ internal sealed class TestEngine : IAsyncDisposable
     /// <summary>Answer a play query with the first legal play (computed from the wire state).</summary>
     public async Task ReplyWithFirstLegalPlayAsync(PlayQueryMessage query)
     {
-        var state = query.State.ToGameState();
-        var candidates = MoveGenerator.GeneratePlays(state.Board, query.Die1, query.Die2);
+        var state = query.State.ToGameSnapshot();
+        var candidates = MoveGenerator.GeneratePlays(new BoardState(state.Board), query.Die1, query.Die2);
         var play = candidates.Count == 0 ? default : candidates[0];
         await SendAsync(new PlayReplyMessage { RequestId = query.RequestId, Moves = play.ToWireMoves() });
     }

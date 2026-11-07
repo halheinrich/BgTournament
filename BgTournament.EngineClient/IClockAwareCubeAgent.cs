@@ -21,26 +21,28 @@ public interface IClockAwareCubeAgent : ICubeAgent, IClockAwareAgent
     /// inserted. Legal return values: <see cref="CubeAction.NoDouble"/>,
     /// <see cref="CubeAction.Double"/>.
     /// </summary>
-    /// <param name="state">The current game state. Treat as input only — do not mutate.</param>
+    /// <param name="state">The decision state, in the on-roll player's frame (the agent's own).</param>
     /// <param name="clock">Both pools as of query issuance. Never null: the flat regime is served through the plain overload.</param>
     /// <param name="cancellationToken">Cooperative cancellation token.</param>
     ValueTask<CubeAction> ChooseOfferAsync(
-        GameState state,
+        GameSnapshot state,
         ClockReading clock,
         CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Decide how to respond to a double offer, with the match clock in view.
     /// Mirrors <see cref="ICubeAgent.ChooseResponseAsync"/> exactly — the
-    /// state is in the <em>responder's</em> frame with the pre-double cube,
-    /// as documented there — with the clock inserted. Legal return values:
+    /// offer's state, in the on-roll (offerer's) frame with the pre-double
+    /// cube, the agent the negative side, as documented there — with the clock
+    /// inserted. The clock stays the agent's own: its pool and its opponent's.
+    /// Legal return values:
     /// <see cref="CubeAction.Take"/>, <see cref="CubeAction.Pass"/>.
     /// </summary>
-    /// <param name="state">The current game state, in the responder's frame. Treat as input only — do not mutate.</param>
+    /// <param name="state">The offer's decision state, in the on-roll (offerer's) frame; the agent is the negative side.</param>
     /// <param name="clock">Both pools as of query issuance. Never null: the flat regime is served through the plain overload.</param>
     /// <param name="cancellationToken">Cooperative cancellation token.</param>
     ValueTask<CubeAction> ChooseResponseAsync(
-        GameState state,
+        GameSnapshot state,
         ClockReading clock,
         CancellationToken cancellationToken = default);
 }

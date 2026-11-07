@@ -19,13 +19,13 @@ public interface IClockAwarePlayAgent : IPlayAgent, IClockAwareAgent
     /// <see cref="IPlayAgent.ChoosePlayAsync"/> exactly, with the clock
     /// inserted.
     /// </summary>
-    /// <param name="state">The current game state. Treat as input only — do not mutate.</param>
+    /// <param name="state">The decision state, in the on-roll player's frame (the agent's own).</param>
     /// <param name="die1">First die (1–6).</param>
     /// <param name="die2">Second die (1–6).</param>
     /// <param name="clock">Both pools as of query issuance. Never null: the flat regime is served through the plain overload.</param>
     /// <param name="cancellationToken">Cooperative cancellation token.</param>
     ValueTask<Play> ChoosePlayAsync(
-        GameState state,
+        GameSnapshot state,
         int die1,
         int die2,
         ClockReading clock,

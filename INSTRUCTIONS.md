@@ -94,8 +94,8 @@ are under "Admin HTTP surface and configuration".
 - **BgDataTypes_Lib** — `Play`/`Move`, `BoardState` (`FromMop`,
   `IndexOfSamePlay`), `BoardPosition`, `CubeAction`/`CubeOwner`.
 - **BgGame_Lib** — `IPlayAgent`/`ICubeAgent`, `GameState` (`FromPosition`,
-  `OpponentView`, `Snapshot`), `MatchState.FromScores`,
-  `GameSnapshot`/`MatchSnapshot`, `MatchRunner` + `SeededDiceSource` and
+  `Snapshot`), `MatchState.FromScores`, `GameSnapshot`/`MatchSnapshot` (its
+  derived `OnRollNeeds`/`OpponentNeeds` included), `MatchRunner` + `SeededDiceSource` and
   `VerifiableDiceSource`, `DiceKey`, `AgentContractViolationException`,
   transcripts.
 - **BgMoveGen** — `MoveGenerator.ResolvePlay` and `Hop`: the server's one
@@ -258,12 +258,19 @@ it from BgDataTypes_Lib's `XgidEncoder` is halheinrich/backgammon#488.
 
 ### The frame rule
 
-The queried player always sees its own frame, in-proc and on the wire: one
+Every position is presented and considered from the on-roll player's point of
+view, in-proc and on the wire, with no re-expression (Hal's ruling,
+halheinrich/backgammon#533): a cube responder decides on the offer's own state
+as the negative side, and the query, not the data, tells the side. One
 convention, stated for engines in `PROTOCOL.md` §4 and for agents in BgGame_Lib
-(Pitfalls, "Cube responders see their own frame"). What this repo does with it:
+(Pitfalls, "Every agent sees the on-roll frame"). What this repo does with it:
 `WireMapping` is the only home of wire↔substrate field correspondences and is
-strictly frame-preserving, so `GameState.OpponentView` is the single
-re-expression anywhere in the system.
+strictly frame-preserving; it also owns the score's two wire kinds (needs for a
+match, running scores for money) and refuses a state mixing them. The clock
+fields are not position data and stay relative to the receiving engine
+(`PROTOCOL.md` §10.2). The one re-expression left is presentation's:
+`ReplayProjection`'s seat-One stopgap ("Replay shape"), which
+halheinrich/backgammon#538 deletes.
 
 ### Play encoding and resolution
 
@@ -271,7 +278,7 @@ Wire moves are `{from, to}` hops with hits deliberately not encoded: hits are
 board-derived facts the server reconstructs. `PROTOCOL.md` §6 is the contract:
 each encoded move is one legal single-die move, in any order and by any legal
 route (Hal's rulings of 2026-09-28 on halheinrich/backgammon#273, Strict among
-them; the protocol stays version 1).
+them; a clarification within version 1, carried into version 2 unchanged).
 
 The server keeps no play matcher of its own. `WireMapping.ToHops` reads a
 reply's moves as BgMoveGen `Hop`s, which cannot express a hit mark, and
@@ -566,10 +573,13 @@ and derives attribution on the subtypes (`CubeTranscriptEntry.ActingSeat`,
 
 1. *Seat attribution*: a plain read of the stamped facts, with no sequencing
    heuristics.
-2. *Frame normalization*: every position is re-expressed in seat One's frame
-   before it crosses the API, so viewers anchor each engine to one side of the
-   board and never learn the frame rule. The flip round-trips through
-   `GameState.OpponentView`, never a local mirror.
+2. *Frame normalization, a stopgap*: every position is re-expressed in seat
+   One's frame before it crosses the API, so the Arena anchors each engine to
+   one side of the board. That is presentation, which the ruling of
+   halheinrich/backgammon#533 moves to the renderer's placement of the on-roll
+   player; until halheinrich/backgammon#538 does that, a private `Flipped`
+   over the snapshot's values (`BoardPosition.Flipped`, scores swapped, owner
+   mirrored) does it here. No agent contract uses it.
 
 Play moves stay mover-relative on purpose: that is the frame standard backgammon
 notation uses, and a viewer steps through served positions rather than applying
@@ -742,8 +752,9 @@ journal drain.
 
 `EngineClient.ServeAsync(WebSocket)` is the transport seam (any socket source,
 in-proc test servers included); `RunAsync(Uri)` wraps it with a `ClientWebSocket`.
-There is no perspective work client-side: the frame rule means query states map
-straight onto the local agent contract. Play replies conform to `PROTOCOL.md` §6
+There is no perspective work client-side: a query state maps straight onto
+the local agent contract, the on-roll frame on both sides of the socket, as a
+`GameSnapshot` (`WireMapping.ToGameSnapshot`). Play replies conform to `PROTOCOL.md` §6
 whatever encoding the local agent returns (see "Play encoding and resolution"). A
 local agent exception drops the connection, which the server correctly reads as a
 forfeit. Every clocked query's pools are logged at `Debug`, so the reference bot's
@@ -790,8 +801,10 @@ configuration never holds the showcase output hostage.
   rename reached through `WireMapping`) fails them, that is the alarm working:
   either fix the regression, or consciously version the protocol and move
   doc + goldens together.
-- **No flips in `WireMapping`, ever.** A flip in the mapping double-applies the
-  frame rule. The pin: `ToWireState_OfOpponentView_IsTheResponderFrame_NoDoubleFlip`.
+- **No flips in `WireMapping`, ever.** Every wire state is the on-roll frame,
+  a cube response's included; a flip anywhere between the runner and the wire
+  breaks the frame rule. The pin:
+  `ToWireState_OfAResponseQuery_IsTheOnRollFrame_PreDoubleCubeOnRolls`.
 - **Every play reply goes through `MoveGenerator.ResolvePlay`, and only its
   candidate goes downstream.** Don't add a matcher here, don't validate
   replies with `IsLegalPlay`, and never apply or record a play spelled from
@@ -907,7 +920,8 @@ configuration never holds the showcase output hostage.
 - **Attribution is the substrate's, read not re-derived.** `ReplayProjection`
   reads the stamped facts; don't reintroduce a sequencing heuristic (opening-die
   winner, flip-per-play, cube-no-flip), which would be a second source of truth.
-  The flip must stay a `GameState.OpponentView` round-trip, and
+  The seat-One flip is a marked stopgap (halheinrich/backgammon#538); don't
+  grow it or call it from anything but the projection, and
   `ProjectEntry`/`ProjectGame` are the single projection SSOT the live feed reuses:
   a change is felt on both surfaces at once.
 - **The admin JSON is pinned byte-for-byte, wire-style.** `ApiGoldenTests` is the

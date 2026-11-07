@@ -21,7 +21,7 @@ public static class WireProtocol
     /// handshake; the server rejects any <see cref="HelloMessage"/> carrying a
     /// different value.
     /// </summary>
-    public const int Version = 1;
+    public const int Version = 2;
 
     /// <summary>
     /// Wire conventions (see PROTOCOL.md): camelCase properties, enums as

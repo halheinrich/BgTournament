@@ -262,42 +262,42 @@ public class TimeControlWireTests
             Announcements.Add(timeControl);
 
         public ValueTask<Play> ChoosePlayAsync(
-            GameState state, int die1, int die2, ClockReading clock, CancellationToken cancellationToken = default)
+            GameSnapshot state, int die1, int die2, ClockReading clock, CancellationToken cancellationToken = default)
         {
             PlayReadings.Add(clock);
             return _play.ChoosePlayAsync(state, die1, die2, cancellationToken);
         }
 
         public ValueTask<Play> ChoosePlayAsync(
-            GameState state, int die1, int die2, CancellationToken cancellationToken = default)
+            GameSnapshot state, int die1, int die2, CancellationToken cancellationToken = default)
         {
             PlainPlayCalls++;
             return _play.ChoosePlayAsync(state, die1, die2, cancellationToken);
         }
 
         public ValueTask<CubeAction> ChooseOfferAsync(
-            GameState state, ClockReading clock, CancellationToken cancellationToken = default)
+            GameSnapshot state, ClockReading clock, CancellationToken cancellationToken = default)
         {
             OfferReadings.Add(clock);
             return _cube.ChooseOfferAsync(state, cancellationToken);
         }
 
         public ValueTask<CubeAction> ChooseOfferAsync(
-            GameState state, CancellationToken cancellationToken = default)
+            GameSnapshot state, CancellationToken cancellationToken = default)
         {
             PlainOfferCalls++;
             return _cube.ChooseOfferAsync(state, cancellationToken);
         }
 
         public ValueTask<CubeAction> ChooseResponseAsync(
-            GameState state, ClockReading clock, CancellationToken cancellationToken = default)
+            GameSnapshot state, ClockReading clock, CancellationToken cancellationToken = default)
         {
             ResponseReadings.Add(clock);
             return _cube.ChooseResponseAsync(state, cancellationToken);
         }
 
         public ValueTask<CubeAction> ChooseResponseAsync(
-            GameState state, CancellationToken cancellationToken = default)
+            GameSnapshot state, CancellationToken cancellationToken = default)
         {
             PlainResponseCalls++;
             return _cube.ChooseResponseAsync(state, cancellationToken);

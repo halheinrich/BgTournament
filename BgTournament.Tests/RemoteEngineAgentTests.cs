@@ -25,14 +25,14 @@ public class RemoteEngineAgentTests
 {
     private static readonly TimeSpan TestTimeout = TimeSpan.FromSeconds(5);
 
-    private static GameState HittableState() => GameState.FromPosition(
+    private static GameSnapshot HittableState() => GameState.FromPosition(
         MatchState.NewMatch(7),
         BoardState.FromMop(new[]
         {
             0, 0, 0, 0, 0, 0, 5, 0, 3, 0, 0, 0, -5, 5, 0, 0, 0, -2, -1, -5, 0, 0, 0, 0, 2, 0,
         }),
         cubeSize: 1,
-        CubeOwner.Centered);
+        CubeOwner.Centered).Snapshot();
 
     /// <summary>
     /// halheinrich/backgammon#304's board: your lone checker on 13 with points
@@ -40,7 +40,7 @@ public class RemoteEngineAgentTests
     /// keeps one; with <paramref name="blotOnEight"/>, an opposing blot there
     /// is hit on the final landing point.
     /// </summary>
-    private static GameState LoneCheckerState(bool blotOnEight)
+    private static GameSnapshot LoneCheckerState(bool blotOnEight)
     {
         var mop = new int[26];
         mop[13] = 1;
@@ -59,19 +59,19 @@ public class RemoteEngineAgentTests
     /// (hitting the opponent blot there) or via 11 (clean) — two legal
     /// candidates, told apart by the route alone.
     /// </summary>
-    private static GameState BlotEnRouteState() => StateOver(new[]
+    private static GameSnapshot BlotEnRouteState() => StateOver(new[]
     {
         0, 0, 0, 0, 0, 0, 0, 0, 0, 0, -1, 0, 0, 1, 0, 0, 0, 0, 0, -2, -2, 0, 0, 0, -2, 0,
     });
 
     /// <summary>On the bar behind a closed board (dice 3-1 cannot enter).</summary>
-    private static GameState ClosedOutState() => StateOver(new[]
+    private static GameSnapshot ClosedOutState() => StateOver(new[]
     {
         0, 14, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, -3, 0, 0, 0, 0, 0, 0, -2, -2, -2, -2, -2, -2, 1,
     });
 
-    private static GameState StateOver(int[] mop) => GameState.FromPosition(
-        MatchState.NewMatch(7), BoardState.FromMop(mop), cubeSize: 1, CubeOwner.Centered);
+    private static GameSnapshot StateOver(int[] mop) => GameState.FromPosition(
+        MatchState.NewMatch(7), BoardState.FromMop(mop), cubeSize: 1, CubeOwner.Centered).Snapshot();
 
     private static PlayReplyMessage PlayReply(params (int From, int To)[] moves) => new()
     {
@@ -86,10 +86,11 @@ public class RemoteEngineAgentTests
     /// with its hit marks — so the pin holds whatever encoding the generator
     /// chooses, and fails if the engine's spelling leaves the agent.
     /// </summary>
-    private static void AssertIsTheCandidate(GameState state, int die1, int die2, Play expected, Play resolved)
+    private static void AssertIsTheCandidate(GameSnapshot state, int die1, int die2, Play expected, Play resolved)
     {
-        var candidates = MoveGenerator.GeneratePlays(state.Board, die1, die2);
-        int index = state.Board.IndexOfSamePlay(expected, candidates);
+        var board = new BoardState(state.Board);
+        var candidates = MoveGenerator.GeneratePlays(board, die1, die2);
+        int index = board.IndexOfSamePlay(expected, candidates);
         Assert.True(index >= 0, $"{expected.ToNotation()} is a candidate of {die1}-{die2}.");
         Assert.True(
             resolved.IsSameEncoding(candidates[index]),
@@ -97,7 +98,7 @@ public class RemoteEngineAgentTests
     }
 
     private static async Task<AgentContractViolationException> AssertIllegalPlayAsync(
-        GameState state, int die1, int die2, PlayReplyMessage reply, MatchSeat seat = MatchSeat.One)
+        GameSnapshot state, int die1, int die2, PlayReplyMessage reply, MatchSeat seat = MatchSeat.One)
     {
         var agent = new RemoteEngineAgent(Replying(reply), seat, TestTimeout);
 
@@ -154,7 +155,7 @@ public class RemoteEngineAgentTests
 
         var play = await agent.ChoosePlayAsync(state, 3, 2);
 
-        var candidates = MoveGenerator.GeneratePlays(state.Board, 3, 2);
+        var candidates = MoveGenerator.GeneratePlays(new BoardState(state.Board), 3, 2);
         Assert.True(play.IsSameEncoding(Assert.Single(candidates)));
         Assert.False(play.IsSameEncoding([new(13, 10), new(10, 8)]), "the engine's spelling must not leave the agent");
     }
@@ -345,6 +346,50 @@ public class RemoteEngineAgentTests
             TestTimeout);
 
         Assert.Equal(expected, await agent.ChooseResponseAsync(HittableState()));
+    }
+
+    /// <summary>
+    /// The server half of the frame rule (halheinrich/backgammon#533): a
+    /// response query carries the offer's own snapshot, the on-roll
+    /// (offerer's) frame — the board unflipped, the offerer's needs in the
+    /// on-roll fields, a redouble's pre-double cube "onRoll".
+    /// </summary>
+    [Fact]
+    public async Task CubeResponse_SendsTheOnRollFrame_Unflipped()
+    {
+        var offer = GameState.FromPosition(
+            MatchState.FromScores(7, onRollScore: 3, opponentScore: 2, isCrawford: false),
+            BoardState.FromMop(new[]
+            {
+                0, 0, 0, 0, 0, 0, 5, 0, 3, 0, 0, 0, -5, 5, 0, 0, 0, -2, -1, -5, 0, 0, 0, 0, 2, 0,
+            }),
+            cubeSize: 2,
+            CubeOwner.OnRoll).Snapshot();
+        CubeResponseQueryMessage? sent = null;
+        var agent = new RemoteEngineAgent(
+            new ScriptedChannel
+            {
+                Handler = (query, _) =>
+                {
+                    sent = Assert.IsType<CubeResponseQueryMessage>(query);
+                    return Task.FromResult<ReplyMessage>(
+                        new CubeResponseReplyMessage { RequestId = "q-1", Action = CubeResponseAction.Take });
+                },
+            },
+            MatchSeat.Two,
+            TestTimeout);
+
+        await agent.ChooseResponseAsync(offer);
+
+        Assert.NotNull(sent);
+        var expectedBoard = new int[26];
+        offer.Board.CopyTo(expectedBoard);
+        Assert.Equal(expectedBoard, sent.State.Board);
+        Assert.Equal(2, sent.State.CubeValue);
+        Assert.Equal(WireCubeOwner.OnRoll, sent.State.CubeOwner);
+        Assert.Equal((7, 4, 5), (sent.State.MatchLength, sent.State.OnRollNeeds, sent.State.OpponentNeeds));
+        Assert.Null(sent.State.OnRollScore);
+        Assert.Null(sent.State.OpponentScore);
     }
 
     [Fact]

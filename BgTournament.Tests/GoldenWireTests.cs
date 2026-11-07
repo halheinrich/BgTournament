@@ -19,14 +19,14 @@ public class GoldenWireTests
     }
 
     /// <summary>The standard opening position, on-roll player's frame.</summary>
-    private static WireGameState OpeningState(int matchLength, int yourScore, int opponentScore) => new()
+    private static WireGameState OpeningState(int matchLength, int onRollNeeds, int opponentNeeds) => new()
     {
         Board = new[] { 0, -2, 0, 0, 0, 0, 5, 0, 3, 0, 0, 0, -5, 5, 0, 0, 0, -3, 0, -5, 0, 0, 0, 0, 2, 0 },
         CubeValue = 1,
         CubeOwner = WireCubeOwner.Centered,
         MatchLength = matchLength,
-        YourScore = yourScore,
-        OpponentScore = opponentScore,
+        OnRollNeeds = onRollNeeds,
+        OpponentNeeds = opponentNeeds,
         IsCrawford = false,
     };
 
@@ -35,7 +35,7 @@ public class GoldenWireTests
     {
         var message = new HelloMessage
         {
-            ProtocolVersion = 1,
+            ProtocolVersion = 2,
             EngineName = "MyBot",
             EngineVersion = "2.1",
             Author = "Jane Doe",
@@ -43,7 +43,7 @@ public class GoldenWireTests
         };
         AssertGolden(
             message,
-            """{"type":"hello","protocolVersion":1,"engineName":"MyBot","engineVersion":"2.1","author":"Jane Doe","engineKey":"5f2c9a1d3e8b4c6f0a7d2e9b1c4f8a3d6e0b5c2f9a4d7e1b8c3f6a0d5e2b9c4f"}""");
+            """{"type":"hello","protocolVersion":2,"engineName":"MyBot","engineVersion":"2.1","author":"Jane Doe","engineKey":"5f2c9a1d3e8b4c6f0a7d2e9b1c4f8a3d6e0b5c2f9a4d7e1b8c3f6a0d5e2b9c4f"}""");
     }
 
     /// <summary>
@@ -54,26 +54,26 @@ public class GoldenWireTests
     [Fact]
     public void Hello_OptionalFieldsAbsent_NotNull()
     {
-        var message = new HelloMessage { ProtocolVersion = 1, EngineName = "MyBot" };
+        var message = new HelloMessage { ProtocolVersion = 2, EngineName = "MyBot" };
         AssertGolden(
             message,
-            """{"type":"hello","protocolVersion":1,"engineName":"MyBot"}""");
+            """{"type":"hello","protocolVersion":2,"engineName":"MyBot"}""");
     }
 
     [Fact]
     public void Welcome()
     {
         AssertGolden(
-            new WelcomeMessage { ProtocolVersion = 1 },
-            """{"type":"welcome","protocolVersion":1}""");
+            new WelcomeMessage { ProtocolVersion = 2 },
+            """{"type":"welcome","protocolVersion":2}""");
     }
 
     [Fact]
     public void Rejected()
     {
         AssertGolden(
-            new RejectedMessage { Reason = "protocol version 2 not supported; this server speaks 1" },
-            """{"type":"rejected","reason":"protocol version 2 not supported; this server speaks 1"}""");
+            new RejectedMessage { Reason = "protocol version 1 not supported; this server speaks 2" },
+            """{"type":"rejected","reason":"protocol version 1 not supported; this server speaks 2"}""");
     }
 
     [Fact]
@@ -82,13 +82,13 @@ public class GoldenWireTests
         var message = new PlayQueryMessage
         {
             RequestId = "q-17",
-            State = OpeningState(matchLength: 7, yourScore: 0, opponentScore: 0),
+            State = OpeningState(matchLength: 7, onRollNeeds: 7, opponentNeeds: 7),
             Die1 = 3,
             Die2 = 1,
         };
         AssertGolden(
             message,
-            """{"type":"playQuery","requestId":"q-17","state":{"board":[0,-2,0,0,0,0,5,0,3,0,0,0,-5,5,0,0,0,-3,0,-5,0,0,0,0,2,0],"cubeValue":1,"cubeOwner":"centered","matchLength":7,"yourScore":0,"opponentScore":0,"isCrawford":false},"die1":3,"die2":1}""");
+            """{"type":"playQuery","requestId":"q-17","state":{"board":[0,-2,0,0,0,0,5,0,3,0,0,0,-5,5,0,0,0,-3,0,-5,0,0,0,0,2,0],"cubeValue":1,"cubeOwner":"centered","matchLength":7,"onRollNeeds":7,"opponentNeeds":7,"isCrawford":false},"die1":3,"die2":1}""");
     }
 
     /// <summary>Answers the 3-1 opening playQuery golden: 8/5 6/5, the point-making play.</summary>
@@ -124,11 +124,36 @@ public class GoldenWireTests
         var message = new CubeOfferQueryMessage
         {
             RequestId = "q-42",
-            State = OpeningState(matchLength: 7, yourScore: 3, opponentScore: 2),
+            State = OpeningState(matchLength: 7, onRollNeeds: 4, opponentNeeds: 5),
         };
         AssertGolden(
             message,
-            """{"type":"cubeOfferQuery","requestId":"q-42","state":{"board":[0,-2,0,0,0,0,5,0,3,0,0,0,-5,5,0,0,0,-3,0,-5,0,0,0,0,2,0],"cubeValue":1,"cubeOwner":"centered","matchLength":7,"yourScore":3,"opponentScore":2,"isCrawford":false}}""");
+            """{"type":"cubeOfferQuery","requestId":"q-42","state":{"board":[0,-2,0,0,0,0,5,0,3,0,0,0,-5,5,0,0,0,-3,0,-5,0,0,0,0,2,0],"cubeValue":1,"cubeOwner":"centered","matchLength":7,"onRollNeeds":4,"opponentNeeds":5,"isCrawford":false}}""");
+    }
+
+    /// <summary>A money state carries the running scores, never needs (PROTOCOL.md §5).</summary>
+    [Fact]
+    public void PlayQuery_MoneySession_CarriesRunningScores()
+    {
+        var message = new PlayQueryMessage
+        {
+            RequestId = "q-9",
+            State = new WireGameState
+            {
+                Board = new[] { 0, -2, 0, 0, 0, 0, 5, 0, 3, 0, 0, 0, -5, 5, 0, 0, 0, -3, 0, -5, 0, 0, 0, 0, 2, 0 },
+                CubeValue = 1,
+                CubeOwner = WireCubeOwner.Centered,
+                MatchLength = 0,
+                OnRollScore = 4,
+                OpponentScore = 6,
+                IsCrawford = false,
+            },
+            Die1 = 6,
+            Die2 = 4,
+        };
+        AssertGolden(
+            message,
+            """{"type":"playQuery","requestId":"q-9","state":{"board":[0,-2,0,0,0,0,5,0,3,0,0,0,-5,5,0,0,0,-3,0,-5,0,0,0,0,2,0],"cubeValue":1,"cubeOwner":"centered","matchLength":0,"onRollScore":4,"opponentScore":6,"isCrawford":false},"die1":6,"die2":4}""");
     }
 
     [Fact]
@@ -140,31 +165,34 @@ public class GoldenWireTests
     }
 
     /// <summary>
-    /// The redouble frame pin: at response-query time the cube is still the
-    /// pre-double cube, so the responder sees value 2 owned by "opponent" (the
-    /// redoubling offerer) — never "you". The in-proc twin of this pin lives in
-    /// BgGame_Lib's responder-frame tests; this is the wire-text half.
+    /// The redouble frame pin: the state is in the on-roll frame — the
+    /// redoubling offerer's, Beta's — and the responder (Alpha) is the
+    /// negative side. At response-query time the cube is still the pre-double
+    /// cube, value 2 owned by "onRoll" (the offerer) — never "opponent". The
+    /// doubler at 3 of 7 needs 4, the responder at 2 needs 5. The in-proc
+    /// twin of this pin lives in BgGame_Lib's runner tests; this is the
+    /// wire-text half.
     /// </summary>
     [Fact]
-    public void CubeResponseQuery_Redouble_ShowsPreDoubleCube_OpponentOwned()
+    public void CubeResponseQuery_Redouble_OnRollFrame_ShowsPreDoubleCube_OnRollOwned()
     {
         var message = new CubeResponseQueryMessage
         {
             RequestId = "q-43",
             State = new WireGameState
             {
-                Board = new[] { 0, 2, 2, 2, 2, 2, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, -2, -2, -3, -2, -2, -2, 0 },
+                Board = new[] { 0, 2, 2, 2, 3, 2, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, -3, -2, -2, -2, -2, -2, 0 },
                 CubeValue = 2,
-                CubeOwner = WireCubeOwner.Opponent,
+                CubeOwner = WireCubeOwner.OnRoll,
                 MatchLength = 7,
-                YourScore = 2,
-                OpponentScore = 3,
+                OnRollNeeds = 4,
+                OpponentNeeds = 5,
                 IsCrawford = false,
             },
         };
         AssertGolden(
             message,
-            """{"type":"cubeResponseQuery","requestId":"q-43","state":{"board":[0,2,2,2,2,2,3,0,0,0,0,0,0,0,0,0,0,0,0,-2,-2,-3,-2,-2,-2,0],"cubeValue":2,"cubeOwner":"opponent","matchLength":7,"yourScore":2,"opponentScore":3,"isCrawford":false}}""");
+            """{"type":"cubeResponseQuery","requestId":"q-43","state":{"board":[0,2,2,2,3,2,2,0,0,0,0,0,0,0,0,0,0,0,0,-3,-2,-2,-2,-2,-2,0],"cubeValue":2,"cubeOwner":"onRoll","matchLength":7,"onRollNeeds":4,"opponentNeeds":5,"isCrawford":false}}""");
     }
 
     [Fact]
@@ -242,14 +270,14 @@ public class GoldenWireTests
         var message = new PlayQueryMessage
         {
             RequestId = "q-1",
-            State = OpeningState(matchLength: 7, yourScore: 0, opponentScore: 0),
+            State = OpeningState(matchLength: 7, onRollNeeds: 7, opponentNeeds: 7),
             Die1 = 1,
             Die2 = 5,
             RollIndex = 1,
         };
         AssertGolden(
             message,
-            """{"type":"playQuery","requestId":"q-1","state":{"board":[0,-2,0,0,0,0,5,0,3,0,0,0,-5,5,0,0,0,-3,0,-5,0,0,0,0,2,0],"cubeValue":1,"cubeOwner":"centered","matchLength":7,"yourScore":0,"opponentScore":0,"isCrawford":false},"die1":1,"die2":5,"rollIndex":1}""");
+            """{"type":"playQuery","requestId":"q-1","state":{"board":[0,-2,0,0,0,0,5,0,3,0,0,0,-5,5,0,0,0,-3,0,-5,0,0,0,0,2,0],"cubeValue":1,"cubeOwner":"centered","matchLength":7,"onRollNeeds":7,"opponentNeeds":7,"isCrawford":false},"die1":1,"die2":5,"rollIndex":1}""");
     }
 
     /// <summary>
@@ -282,7 +310,7 @@ public class GoldenWireTests
         var message = new PlayQueryMessage
         {
             RequestId = "q-2",
-            State = OpeningState(matchLength: 7, yourScore: 0, opponentScore: 0),
+            State = OpeningState(matchLength: 7, onRollNeeds: 7, opponentNeeds: 7),
             Die1 = 3,
             Die2 = 1,
             YourTimeRemainingSeconds = 95.5,
@@ -290,7 +318,7 @@ public class GoldenWireTests
         };
         AssertGolden(
             message,
-            """{"type":"playQuery","requestId":"q-2","state":{"board":[0,-2,0,0,0,0,5,0,3,0,0,0,-5,5,0,0,0,-3,0,-5,0,0,0,0,2,0],"cubeValue":1,"cubeOwner":"centered","matchLength":7,"yourScore":0,"opponentScore":0,"isCrawford":false},"die1":3,"die2":1,"yourTimeRemainingSeconds":95.5,"opponentTimeRemainingSeconds":120}""");
+            """{"type":"playQuery","requestId":"q-2","state":{"board":[0,-2,0,0,0,0,5,0,3,0,0,0,-5,5,0,0,0,-3,0,-5,0,0,0,0,2,0],"cubeValue":1,"cubeOwner":"centered","matchLength":7,"onRollNeeds":7,"opponentNeeds":7,"isCrawford":false},"die1":3,"die2":1,"yourTimeRemainingSeconds":95.5,"opponentTimeRemainingSeconds":120}""");
     }
 
     /// <summary>
@@ -303,13 +331,13 @@ public class GoldenWireTests
         var message = new CubeOfferQueryMessage
         {
             RequestId = "q-44",
-            State = OpeningState(matchLength: 7, yourScore: 3, opponentScore: 2),
+            State = OpeningState(matchLength: 7, onRollNeeds: 4, opponentNeeds: 5),
             YourTimeRemainingSeconds = 60,
             OpponentTimeRemainingSeconds = 65.5,
         };
         AssertGolden(
             message,
-            """{"type":"cubeOfferQuery","requestId":"q-44","state":{"board":[0,-2,0,0,0,0,5,0,3,0,0,0,-5,5,0,0,0,-3,0,-5,0,0,0,0,2,0],"cubeValue":1,"cubeOwner":"centered","matchLength":7,"yourScore":3,"opponentScore":2,"isCrawford":false},"yourTimeRemainingSeconds":60,"opponentTimeRemainingSeconds":65.5}""");
+            """{"type":"cubeOfferQuery","requestId":"q-44","state":{"board":[0,-2,0,0,0,0,5,0,3,0,0,0,-5,5,0,0,0,-3,0,-5,0,0,0,0,2,0],"cubeValue":1,"cubeOwner":"centered","matchLength":7,"onRollNeeds":4,"opponentNeeds":5,"isCrawford":false},"yourTimeRemainingSeconds":60,"opponentTimeRemainingSeconds":65.5}""");
     }
 
     [Fact]

@@ -23,8 +23,8 @@ public class ReferenceBotTests
         0, 14, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, -3, 0, 0, 0, 0, 0, 0, -2, -2, -2, -2, -2, -2, 1,
     };
 
-    private static GameState StateOver(int[] board) => GameState.FromPosition(
-        MatchState.NewMatch(7), BoardState.FromMop(board), cubeSize: 1, CubeOwner.Centered);
+    private static GameSnapshot StateOver(int[] board) => GameState.FromPosition(
+        MatchState.NewMatch(7), BoardState.FromMop(board), cubeSize: 1, CubeOwner.Centered).Snapshot();
 
     public static TheoryData<int, int> AllDicePairs()
     {
@@ -49,8 +49,9 @@ public class ReferenceBotTests
 
         var play = await agent.ChoosePlayAsync(state, die1, die2);
 
-        var candidates = MoveGenerator.GeneratePlays(state.Board, die1, die2);
-        Assert.True(state.Board.IndexOfSamePlay(play, candidates) >= 0, "the agent's play is a legal play");
+        var board = new BoardState(state.Board);
+        var candidates = MoveGenerator.GeneratePlays(board, die1, die2);
+        Assert.True(board.IndexOfSamePlay(play, candidates) >= 0, "the agent's play is a legal play");
     }
 
     [Fact]
@@ -79,7 +80,7 @@ public class ReferenceBotTests
 
         // On the bar; entry points 22 (die 3) and 24 (die 1) are both closed.
         // The substrate expresses "no legal move" as a single empty candidate.
-        var candidates = MoveGenerator.GeneratePlays(state.Board, 3, 1);
+        var candidates = MoveGenerator.GeneratePlays(new BoardState(state.Board), 3, 1);
         var candidate = Assert.Single(candidates);
         Assert.Equal(0, candidate.Count);
 

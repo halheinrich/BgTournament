@@ -13,7 +13,7 @@ public sealed class PassiveCubeAgent : ICubeAgent
     /// <inheritdoc/>
     /// <remarks>Always <see cref="CubeAction.NoDouble"/>.</remarks>
     public ValueTask<CubeAction> ChooseOfferAsync(
-        GameState state, CancellationToken cancellationToken = default)
+        GameSnapshot state, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(state);
         cancellationToken.ThrowIfCancellationRequested();
@@ -23,7 +23,7 @@ public sealed class PassiveCubeAgent : ICubeAgent
     /// <inheritdoc/>
     /// <remarks>Always <see cref="CubeAction.Take"/>.</remarks>
     public ValueTask<CubeAction> ChooseResponseAsync(
-        GameState state, CancellationToken cancellationToken = default)
+        GameSnapshot state, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(state);
         cancellationToken.ThrowIfCancellationRequested();

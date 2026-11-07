@@ -24,7 +24,7 @@ public class TournamentServerTests
     private sealed class ThrowingPlayAgent : IPlayAgent
     {
         public ValueTask<Play> ChoosePlayAsync(
-            GameState state, int die1, int die2, CancellationToken cancellationToken = default) =>
+            GameSnapshot state, int die1, int die2, CancellationToken cancellationToken = default) =>
             throw new InvalidOperationException("This engine crashes on purpose.");
     }
 

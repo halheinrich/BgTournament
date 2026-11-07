@@ -168,11 +168,7 @@ public sealed class EngineClient
                 {
                     diceAudit.OnPlayQuery(query);
                     var clock = ClockOf(query);
-                    var state = query.State.ToGameState();
-
-                    // The agent is handed a live board it could change; the
-                    // reply is encoded from the position as queried.
-                    var start = state.Board.Copy();
+                    var state = query.State.ToGameSnapshot();
                     var play = _clockAwarePlayAgent is not null && clock is not null
                         ? await _clockAwarePlayAgent
                             .ChoosePlayAsync(state, query.Die1, query.Die2, clock, cancellationToken)
@@ -184,7 +180,7 @@ public sealed class EngineClient
                         new PlayReplyMessage
                         {
                             RequestId = query.RequestId,
-                            Moves = ConformingMoves(start, play, query.Die1, query.Die2),
+                            Moves = ConformingMoves(state.Board, play, query.Die1, query.Die2),
                         },
                         cancellationToken).ConfigureAwait(false);
                     break;
@@ -195,10 +191,10 @@ public sealed class EngineClient
                     var clock = ClockOf(query);
                     var action = _clockAwareCubeAgent is not null && clock is not null
                         ? await _clockAwareCubeAgent
-                            .ChooseOfferAsync(query.State.ToGameState(), clock, cancellationToken)
+                            .ChooseOfferAsync(query.State.ToGameSnapshot(), clock, cancellationToken)
                             .ConfigureAwait(false)
                         : await _cubeAgent
-                            .ChooseOfferAsync(query.State.ToGameState(), cancellationToken)
+                            .ChooseOfferAsync(query.State.ToGameSnapshot(), cancellationToken)
                             .ConfigureAwait(false);
                     await channel.SendAsync(
                         new CubeOfferReplyMessage
@@ -221,10 +217,10 @@ public sealed class EngineClient
                     var clock = ClockOf(query);
                     var action = _clockAwareCubeAgent is not null && clock is not null
                         ? await _clockAwareCubeAgent
-                            .ChooseResponseAsync(query.State.ToGameState(), clock, cancellationToken)
+                            .ChooseResponseAsync(query.State.ToGameSnapshot(), clock, cancellationToken)
                             .ConfigureAwait(false)
                         : await _cubeAgent
-                            .ChooseResponseAsync(query.State.ToGameState(), cancellationToken)
+                            .ChooseResponseAsync(query.State.ToGameSnapshot(), cancellationToken)
                             .ConfigureAwait(false);
                     await channel.SendAsync(
                         new CubeResponseReplyMessage
@@ -298,8 +294,9 @@ public sealed class EngineClient
     // legal play still conforms. A play that is no legal play goes out as the
     // agent wrote it: the server is the legality authority, and its forfeit
     // names the contract violation rather than a dropped connection.
-    private static IReadOnlyList<WireMove> ConformingMoves(BoardState start, Play play, int die1, int die2)
+    private static IReadOnlyList<WireMove> ConformingMoves(BoardPosition position, Play play, int die1, int die2)
     {
+        var start = new BoardState(position);
         var candidates = MoveGenerator.GeneratePlays(start, die1, die2);
         int index = start.IndexOfSamePlay(play, candidates);
         return (index >= 0 ? candidates[index] : play).ToWireMoves();

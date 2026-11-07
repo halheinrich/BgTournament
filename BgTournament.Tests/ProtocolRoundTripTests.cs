@@ -14,13 +14,15 @@ namespace BgTournament.Tests;
 public class ProtocolRoundTripTests
 {
     [Fact]
-    public void Version_IsOne()
+    public void Version_IsTwo()
     {
-        Assert.Equal(1, WireProtocol.Version);
+        // 2: every state in the on-roll player's frame, on-roll names, and a
+        // match score in needs (halheinrich/backgammon#533).
+        Assert.Equal(2, WireProtocol.Version);
     }
 
     [Fact]
-    public void PlayQuery_RoundTrips_AllFields()
+    public void PlayQuery_MoneyState_RoundTrips_AllFields()
     {
         var original = new PlayQueryMessage
         {
@@ -29,9 +31,9 @@ public class ProtocolRoundTripTests
             {
                 Board = new[] { 0, -2, 0, 0, 0, 0, 5, 0, 3, 0, 0, 0, -5, 5, 0, 0, 0, -3, 0, -5, 0, 0, 0, 0, 2, 0 },
                 CubeValue = 4,
-                CubeOwner = WireCubeOwner.You,
+                CubeOwner = WireCubeOwner.OnRoll,
                 MatchLength = 0,
-                YourScore = 2,
+                OnRollScore = 2,
                 OpponentScore = 5,
                 IsCrawford = false,
                 Xgid = "XGID=-b----E-C---eE---c-e----B-:1:-1:1:31:2:5:0:0:10",
@@ -47,12 +49,42 @@ public class ProtocolRoundTripTests
         Assert.Equal(original.State.CubeValue, restored.State.CubeValue);
         Assert.Equal(original.State.CubeOwner, restored.State.CubeOwner);
         Assert.Equal(original.State.MatchLength, restored.State.MatchLength);
-        Assert.Equal(original.State.YourScore, restored.State.YourScore);
+        Assert.Equal(original.State.OnRollScore, restored.State.OnRollScore);
         Assert.Equal(original.State.OpponentScore, restored.State.OpponentScore);
+        Assert.Null(restored.State.OnRollNeeds);
+        Assert.Null(restored.State.OpponentNeeds);
         Assert.Equal(original.State.IsCrawford, restored.State.IsCrawford);
         Assert.Equal(original.State.Xgid, restored.State.Xgid);
         Assert.Equal(original.Die1, restored.Die1);
         Assert.Equal(original.Die2, restored.Die2);
+    }
+
+    [Fact]
+    public void CubeResponseQuery_MatchState_RoundTrips_InNeeds()
+    {
+        var original = new CubeResponseQueryMessage
+        {
+            RequestId = "abc",
+            State = new WireGameState
+            {
+                Board = new[] { 0, 2, 2, 2, 3, 2, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, -3, -2, -2, -2, -2, -2, 0 },
+                CubeValue = 2,
+                CubeOwner = WireCubeOwner.OnRoll,
+                MatchLength = 7,
+                OnRollNeeds = 4,
+                OpponentNeeds = 5,
+                IsCrawford = false,
+            },
+        };
+
+        var restored = Assert.IsType<CubeResponseQueryMessage>(
+            WireProtocol.Deserialize(WireProtocol.Serialize(original)));
+
+        Assert.Equal(original.State.Board, restored.State.Board);
+        Assert.Equal(WireCubeOwner.OnRoll, restored.State.CubeOwner);
+        Assert.Equal((7, 4, 5), (restored.State.MatchLength, restored.State.OnRollNeeds, restored.State.OpponentNeeds));
+        Assert.Null(restored.State.OnRollScore);
+        Assert.Null(restored.State.OpponentScore);
     }
 
     [Fact]
@@ -85,14 +117,14 @@ public class ProtocolRoundTripTests
             CubeValue = 1,
             CubeOwner = WireCubeOwner.Centered,
             MatchLength = 5,
-            YourScore = 0,
-            OpponentScore = 0,
+            OnRollNeeds = 5,
+            OpponentNeeds = 5,
             IsCrawford = false,
         };
         var messages = new ProtocolMessage[]
         {
-            new HelloMessage { ProtocolVersion = 1, EngineName = "e" },
-            new WelcomeMessage { ProtocolVersion = 1 },
+            new HelloMessage { ProtocolVersion = 2, EngineName = "e" },
+            new WelcomeMessage { ProtocolVersion = 2 },
             new RejectedMessage { Reason = "r" },
             new PlayQueryMessage { RequestId = "1", State = state, Die1 = 6, Die2 = 6 },
             new PlayReplyMessage { RequestId = "1", Moves = Array.Empty<WireMove>() },
@@ -137,9 +169,9 @@ public class ProtocolRoundTripTests
     public void Deserialize_UnknownExtraField_IsIgnored()
     {
         var restored = Assert.IsType<WelcomeMessage>(WireProtocol.Deserialize(
-            """{"type":"welcome","protocolVersion":1,"futureField":"ignored"}"""));
+            """{"type":"welcome","protocolVersion":2,"futureField":"ignored"}"""));
 
-        Assert.Equal(1, restored.ProtocolVersion);
+        Assert.Equal(2, restored.ProtocolVersion);
     }
 
     [Fact]
@@ -169,7 +201,7 @@ public class ProtocolRoundTripTests
     [Fact]
     public void Deserialize_MissingRequiredField_ThrowsJsonException()
     {
-        Assert.Throws<JsonException>(() => WireProtocol.Deserialize("""{"type":"hello","protocolVersion":1}"""));
+        Assert.Throws<JsonException>(() => WireProtocol.Deserialize("""{"type":"hello","protocolVersion":2}"""));
     }
 
     [Fact]

@@ -53,7 +53,7 @@ public class CollectionImmutabilityTests
         board => new WireGameState
         {
             Board = board, CubeValue = 1, CubeOwner = WireCubeOwner.Centered,
-            MatchLength = 7, YourScore = 0, OpponentScore = 0, IsCrawford = false,
+            MatchLength = 7, OnRollNeeds = 7, OpponentNeeds = 7, IsCrawford = false,
         }.Board);
 
     [Fact]

@@ -21,11 +21,13 @@ namespace BgTournament.Server;
 /// <see cref="GameEndedTranscriptEntry.Winner"/>. The projection is a plain
 /// read of those stamped facts; it derives nothing from sequencing.</para>
 ///
-/// <para><b>Frame normalization.</b> Every position is re-expressed in seat
-/// One's frame before it crosses the API, so viewers never handle
-/// perspective. The flip round-trips through the substrate's own
-/// <see cref="GameState.OpponentView"/> — the system's single re-expression;
-/// no mirror rule is duplicated here.</para>
+/// <para><b>Frame normalization (a stopgap).</b> Every position is
+/// re-expressed in seat One's frame before it crosses the API, so the Arena
+/// can draw seat One at the bottom. That is presentation, and Hal's ruling
+/// (halheinrich/backgammon#533) moves it to the renderer's placement of the
+/// on-roll player, with no re-expression; until then it is a private stopgap
+/// over the snapshot's values here (<see cref="Flipped"/>), deleted by
+/// halheinrich/backgammon#538. No agent contract uses it.</para>
 ///
 /// <para>The per-entry (<see cref="ProjectEntry"/>) and per-game
 /// (<see cref="ProjectGame"/>) projections are the single source of truth for
@@ -134,7 +136,8 @@ internal static class ReplayProjection
     /// <summary>
     /// Express a recorded snapshot as a seat-One-frame position.
     /// <paramref name="frameSeat"/> is the seat whose frame the snapshot is
-    /// in; a seat-Two-frame snapshot is re-expressed through the substrate.
+    /// in; a seat-Two-frame snapshot is re-expressed by the stopgap
+    /// <see cref="Flipped"/>.
     /// </summary>
     private static GamePosition ToPosition(GameSnapshot snapshot, MatchSeat frameSeat)
     {
@@ -144,23 +147,30 @@ internal static class ReplayProjection
     }
 
     /// <summary>
-    /// The frame flip, single-sourced: rebuild the live state the snapshot
-    /// captured and round-trip it through <see cref="GameState.OpponentView"/> —
-    /// the substrate's only re-expression — rather than mirroring boards,
-    /// scores, or cube owners here.
+    /// Stopgap, deleted by halheinrich/backgammon#538: the snapshot re-expressed
+    /// in the other seat's frame, for the Arena's seat-One-at-the-bottom
+    /// drawing — the board mirrored (<see cref="BoardPosition.Flipped"/>), the
+    /// scores swapped, the cube owner mirrored, size, length and Crawford
+    /// unchanged. Presentation only: the substrate and the protocol
+    /// re-express nothing (halheinrich/backgammon#533), and no agent contract
+    /// may use this.
     /// </summary>
     private static GameSnapshot Flipped(GameSnapshot snapshot) =>
-        GameState.FromPosition(
-                MatchState.FromScores(
-                    snapshot.Match.MatchLength,
-                    snapshot.Match.OnRollScore,
-                    snapshot.Match.OpponentScore,
-                    snapshot.Match.IsCrawford),
-                new BoardState(snapshot.Board),
-                snapshot.CubeSize,
-                snapshot.CubeOwner)
-            .OpponentView()
-            .Snapshot();
+        new(
+            snapshot.Board.Flipped(),
+            snapshot.CubeSize,
+            snapshot.CubeOwner switch
+            {
+                SubstrateCubeOwner.OnRoll => SubstrateCubeOwner.Opponent,
+                SubstrateCubeOwner.Opponent => SubstrateCubeOwner.OnRoll,
+                SubstrateCubeOwner.Centered => SubstrateCubeOwner.Centered,
+                _ => throw new InvalidOperationException($"Unhandled CubeOwner value: {snapshot.CubeOwner}."),
+            },
+            snapshot.Match with
+            {
+                OnRollScore = snapshot.Match.OpponentScore,
+                OpponentScore = snapshot.Match.OnRollScore,
+            });
 
     /// <summary>
     /// Reuse the wire's single-sourced play flattening (hit-encoding

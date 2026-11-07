@@ -28,11 +28,11 @@ public sealed class RandomPlayAgent : IPlayAgent
     /// <inheritdoc/>
     /// <remarks>Returns the empty play when no legal play exists.</remarks>
     public ValueTask<Play> ChoosePlayAsync(
-        GameState state, int die1, int die2, CancellationToken cancellationToken = default)
+        GameSnapshot state, int die1, int die2, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(state);
         cancellationToken.ThrowIfCancellationRequested();
-        var candidates = MoveGenerator.GeneratePlays(state.Board, die1, die2);
+        var candidates = MoveGenerator.GeneratePlays(new BoardState(state.Board), die1, die2);
         var play = candidates.Count == 0 ? default : candidates[_random.Next(candidates.Count)];
         return new ValueTask<Play>(play);
     }

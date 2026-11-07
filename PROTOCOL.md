@@ -1,4 +1,4 @@
-# BgTournament Wire Protocol — Version 1
+# BgTournament Wire Protocol — Version 2
 
 This document is the canonical engine contract for playing matches against a
 BgTournament server. It is deliberately language-neutral: everything an engine
@@ -49,21 +49,21 @@ protocol-version mismatch, an engine name already connected, or a malformed
 hello. The server also rejects connections that send no hello within its
 handshake timeout (default 10 seconds).
 
-`protocolVersion` is an integer. This document describes **version 1**. There
+`protocolVersion` is an integer. This document describes **version 2**. There
 is no negotiation: if the versions differ, the server rejects and names both
 versions in the reason.
 
 Engine → server:
 
 ```json
-{"type":"hello","protocolVersion":1,"engineName":"MyBot","engineVersion":"2.1","author":"Jane Doe"}
+{"type":"hello","protocolVersion":2,"engineName":"MyBot","engineVersion":"2.1","author":"Jane Doe"}
 ```
 
 Server → engine, one of:
 
 ```json
-{"type":"welcome","protocolVersion":1}
-{"type":"rejected","reason":"protocol version 2 not supported; this server speaks 1"}
+{"type":"welcome","protocolVersion":2}
+{"type":"rejected","reason":"protocol version 1 not supported; this server speaks 2"}
 ```
 
 `engineName` is your registry identity — matches are started by naming two
@@ -87,8 +87,8 @@ A server may run one of two engine policies:
   out-of-band (not part of this protocol).
 
 A registered engine presents its key as an optional `engineKey` field on the
-hello (additive under §2's unknown-field rule — the protocol stays version 1,
-and an unregistered engine sends exactly the hello it always did):
+hello (additive under §2's unknown-field rule — a version-1 minor addition,
+§12 — and an unregistered engine sends exactly the hello it always did):
 
 ```json
 {"type":"hello","protocolVersion":1,"engineName":"MyBot","engineKey":"5f2c9a1d3e8b4c6f0a7d2e9b1c4f8a3d6e0b5c2f9a4d7e1b8c3f6a0d5e2b9c4f"}
@@ -115,69 +115,92 @@ deployment concern, not a protocol change.
 
 ## 4. The frame rule
 
-**Every state you receive is expressed in your own frame.** Positive board
-values are your checkers, `yourScore` is your score, `cubeOwner: "you"` means
-you own the cube. You never need to ask "which side am I this time?" — you are
-always the positive side of whatever you are sent.
+**Every state is expressed in the frame of the player on roll.** Positive
+board values are the on-roll player's checkers, the `onRoll…` fields are the
+on-roll player's, and `cubeOwner: "onRoll"` means the player on roll owns the
+cube. The data never changes frame for its receiver: the query tells you
+which side you are.
 
-The same physical position looks different to the two players. A checker your
-opponent sees at their point `p` with count `-n`, you see at point `25 - p`
-with count `+n`. A checker on **your** bar is `board[25] = +1` in your frame
-and `board[0] = -1` in your opponent's.
-
-Who is *on roll* depends on the query:
-
-- `playQuery`, `cubeOfferQuery`: **you** are on roll.
+- `playQuery`, `cubeOfferQuery`: **you** are on roll — the positive side; the
+  `onRoll…` fields are yours.
 - `cubeResponseQuery`: **your opponent** is on roll — they doubled before
-  rolling, and they roll next if you take. The state is still in your frame.
+  rolling, and they roll next if you take. You are the **negative** side:
+  your checkers are the negative counts, your bar is `board[0]`, and your
+  score is in the `opponent…` fields.
+
+The same physical position looks different from the two sides, and the
+server always writes it from the on-roll player's. A checker the player on
+roll has at point `p` with count `+n`, its opponent would call point `25 - p`
+with count `-n`. So on a response query, your checker on your own point `q`
+appears at point `25 - q` with a negative count.
 
 ### The cube in a response query
 
 At response-query time the double is *pending*, so the state shows the
 **pre-double cube**: its pre-double value, owned by `"centered"` (first double
-of the game) or `"opponent"` (a redouble by the opponent, who owned the cube).
-It is never `"you"` — a player can only double a cube they have access to. If
-you take, the cube becomes yours at twice the shown value.
+of the game) or `"onRoll"` (a redouble by the player on roll, who owned the
+cube). It is never `"opponent"` — a player can only double a cube they have
+access to. If you take, the cube becomes yours at twice the shown value.
 
-Worked example — you are Alpha, playing Beta. Beta took an earlier double, so
-Beta owns the cube at 2. Beta now redoubles to 4. You receive:
+Worked example — you are Alpha, playing Beta in a 7-point match. Beta leads
+3–2, so Beta needs 4 and you need 5. Beta took an earlier double, so Beta owns
+the cube at 2. Beta now redoubles to 4. You receive:
 
 ```json
-{"type":"cubeResponseQuery","requestId":"q-43","state":{"board":[0,2,2,2,2,2,3,0,0,0,0,0,0,0,0,0,0,0,0,-2,-2,-3,-2,-2,-2,0],"cubeValue":2,"cubeOwner":"opponent","matchLength":7,"yourScore":2,"opponentScore":3,"isCrawford":false}}
+{"type":"cubeResponseQuery","requestId":"q-43","state":{"board":[0,2,2,2,3,2,2,0,0,0,0,0,0,0,0,0,0,0,0,-3,-2,-2,-2,-2,-2,0],"cubeValue":2,"cubeOwner":"onRoll","matchLength":7,"onRollNeeds":4,"opponentNeeds":5,"isCrawford":false}}
 ```
 
-Reading it: the cube shown is the pre-double cube (value 2, Beta's). Your
-checkers (positive) are in your home board; Beta rolls next if you take. Reply
-`take` and play continues with the cube at 4, owned by you; reply `pass` and
-you concede this game at the pre-double stake of 2 points.
+Reading it: Beta is on roll, so the position is written from Beta's side —
+Beta's checkers are positive, in Beta's home board (points 1–6), and yours are
+negative, in your home board, which is points 19–24 in this frame (your
+6-point, with three checkers, is point 19). `onRollNeeds` is Beta's 4,
+`opponentNeeds` your 5. The cube shown is the pre-double cube: value 2,
+Beta's, so `"onRoll"`. Reply `take` and play continues with the cube at 4,
+owned by you; reply `pass` and you concede this game at the pre-double stake
+of 2 points.
 
 ## 5. The state object
 
-Carried by every query as `state`:
+Carried by every query as `state`, always in the on-roll player's frame (§4):
 
-| Field           | Type      | Meaning                                                                 |
-| --------------- | --------- | ----------------------------------------------------------------------- |
-| `board`         | int[26]   | The position, in your frame (below).                                    |
-| `cubeValue`     | int       | Doubling-cube value: 1, 2, 4, 8, …                                      |
-| `cubeOwner`     | string    | `"you"` \| `"opponent"` \| `"centered"` — who may offer the next double. |
-| `matchLength`   | int       | Match length in points; `0` = money session.                            |
-| `yourScore`     | int       | Your match points so far.                                               |
-| `opponentScore` | int       | Opponent's match points so far.                                         |
-| `isCrawford`    | bool      | True iff this game is the Crawford game (cube suspended).               |
-| `xgid`          | string?   | Optional debug decoration; MAY be present. Never rely on it.            |
+| Field           | Type      | Meaning                                                                                  |
+| --------------- | --------- | ---------------------------------------------------------------------------------------- |
+| `board`         | int[26]   | The position (below).                                                                    |
+| `cubeValue`     | int       | Doubling-cube value: 1, 2, 4, 8, …                                                       |
+| `cubeOwner`     | string    | `"onRoll"` \| `"opponent"` \| `"centered"` — who may offer the next double.               |
+| `matchLength`   | int       | Match length in points; `0` = money session. It says which score fields follow.          |
+| `onRollNeeds`   | int       | Match only (`matchLength` > 0): points the player on roll still needs, 1 to `matchLength`. |
+| `opponentNeeds` | int       | Match only: points the opponent of the player on roll still needs.                       |
+| `onRollScore`   | int       | Money only (`matchLength` 0): points the player on roll has won this session.            |
+| `opponentScore` | int       | Money only: points the opponent of the player on roll has won this session.              |
+| `isCrawford`    | bool      | True iff this game is the Crawford game (cube suspended).                                |
+| `xgid`          | string?   | Optional debug decoration; MAY be present. Never rely on it.                             |
+
+**The score's two kinds.** A match is scored by what each side still needs,
+so equal standings read alike: 0–0 in a 5-point match and 2–2 in a 7-point
+match are both `"onRollNeeds":5,"opponentNeeds":5`. A money session has no
+target, so it carries the running scores. A state carries exactly its kind's
+two fields; one carrying the other kind's fields is malformed. A money-session
+play query:
+
+```json
+{"type":"playQuery","requestId":"q-9","state":{"board":[0,-2,0,0,0,0,5,0,3,0,0,0,-5,5,0,0,0,-3,0,-5,0,0,0,0,2,0],"cubeValue":1,"cubeOwner":"centered","matchLength":0,"onRollScore":4,"opponentScore":6,"isCrawford":false},"die1":6,"die2":4}
+```
 
 **Board layout.** `board` has 26 integers:
 
-- `board[0]` — your opponent's bar.
-- `board[1..24]` — the points, numbered from **your** bear-off end: your home
-  board is points 1–6, your opponent's home board is points 19–24.
-- `board[25]` — your bar.
+- `board[0]` — the bar of the on-roll player's opponent.
+- `board[1..24]` — the points, numbered from the **on-roll player's** bear-off
+  end: its home board is points 1–6, its opponent's home board is points
+  19–24.
+- `board[25]` — the on-roll player's bar.
 
-Each entry is a signed checker count: positive checkers are yours, negative
-are your opponent's. You move from higher-numbered points toward lower ones;
-you bear off from points 1–6; you enter from the bar onto points 19–24 (an
-entry with die *d* lands on point `25 - d`). Checkers borne off do not appear
-on the board — they are implied by the counts summing to fewer than 15 a side.
+Each entry is a signed checker count: positive checkers are the on-roll
+player's, negative are its opponent's. The player on roll moves from
+higher-numbered points toward lower ones, bears off from points 1–6, and
+enters from the bar onto points 19–24 (an entry with die *d* lands on point
+`25 - d`). Checkers borne off do not appear on the board — they are implied by
+the counts summing to fewer than 15 a side.
 
 ## 6. Decision queries and replies
 
@@ -186,7 +209,7 @@ on the board — they are implied by the counts summing to fewer than 15 a side.
 You are on roll with the given dice; choose your play.
 
 ```json
-{"type":"playQuery","requestId":"q-17","state":{"board":[0,-2,0,0,0,0,5,0,3,0,0,0,-5,5,0,0,0,-3,0,-5,0,0,0,0,2,0],"cubeValue":1,"cubeOwner":"centered","matchLength":7,"yourScore":0,"opponentScore":0,"isCrawford":false},"die1":3,"die2":1}
+{"type":"playQuery","requestId":"q-17","state":{"board":[0,-2,0,0,0,0,5,0,3,0,0,0,-5,5,0,0,0,-3,0,-5,0,0,0,0,2,0],"cubeValue":1,"cubeOwner":"centered","matchLength":7,"onRollNeeds":7,"opponentNeeds":7,"isCrawford":false},"die1":3,"die2":1}
 ```
 
 That is the standard opening position with an opening roll of 3-1. This reply
@@ -197,7 +220,8 @@ plays 8/5 6/5 (one checker from your 8-point using the 3, one from your
 {"type":"playReply","requestId":"q-17","moves":[{"from":8,"to":5},{"from":6,"to":5}]}
 ```
 
-**Move encoding.** Each move is `{from, to}` in your frame: `from` is 1–24, or
+**Move encoding.** Each move is `{from, to}` in the state's frame — yours,
+since you are on roll: `from` is 1–24, or
 25 to enter from your bar; `to` is 1–24, or 0 to bear the checker off. **Each
 encoded move is one legal single-die move:** one checker moved by the number
 on one die of the roll, with some order of your moves in which each is a
@@ -210,7 +234,7 @@ are open (24/23 23/20 plays the same checker the same way). A merged move
 (24/20 for that 3-1), or a move no die of the roll makes, is not a legal play.
 
 **Legality.** The server is the sole legality authority (standard backgammon;
-no variants in version 1). Your reply must be one of the legal plays for the
+no variants). Your reply must be one of the legal plays for the
 queried position and dice — including the obligations to use both dice when
 possible and the larger die when only one can be used. If no legal play
 exists, reply with an empty `moves` array:
@@ -235,7 +259,7 @@ in 1-point matches — which are cubeless — or when your opponent owns the
 cube). Decide before your roll.
 
 ```json
-{"type":"cubeOfferQuery","requestId":"q-42","state":{"board":[0,-2,0,0,0,0,5,0,3,0,0,0,-5,5,0,0,0,-3,0,-5,0,0,0,0,2,0],"cubeValue":1,"cubeOwner":"centered","matchLength":7,"yourScore":3,"opponentScore":2,"isCrawford":false}}
+{"type":"cubeOfferQuery","requestId":"q-42","state":{"board":[0,-2,0,0,0,0,5,0,3,0,0,0,-5,5,0,0,0,-3,0,-5,0,0,0,0,2,0],"cubeValue":1,"cubeOwner":"centered","matchLength":7,"onRollNeeds":4,"opponentNeeds":5,"isCrawford":false}}
 ```
 
 ```json
@@ -357,7 +381,7 @@ re-rolled and never shown. Index 1 is `(1,5)` — seat One's die 1, seat Two's d
 `rollIndex` 1:
 
 ```json
-{"type":"playQuery","requestId":"q-1","state":{"board":[0,-2,0,0,0,0,5,0,3,0,0,0,-5,5,0,0,0,-3,0,-5,0,0,0,0,2,0],"cubeValue":1,"cubeOwner":"centered","matchLength":7,"yourScore":0,"opponentScore":0,"isCrawford":false},"die1":1,"die2":5,"rollIndex":1}
+{"type":"playQuery","requestId":"q-1","state":{"board":[0,-2,0,0,0,0,5,0,3,0,0,0,-5,5,0,0,0,-3,0,-5,0,0,0,0,2,0],"cubeValue":1,"cubeOwner":"centered","matchLength":7,"onRollNeeds":7,"opponentNeeds":7,"isCrawford":false},"die1":1,"die2":5,"rollIndex":1}
 ```
 
 ### 8.3 Verifying a match
@@ -389,7 +413,7 @@ re-implementation in any language must reproduce them.
   each roll you saw at its committed position, so none was substituted. Rolls you
   did not see — your opponent's, dances — are not on the wire; they are auditable
   from the server's match transcript, not by an engine over the protocol.
-- **Non-selection (not proven).** In version 1 the server alone supplies the
+- **Non-selection (not proven).** Today the server alone supplies the
   entropy, so nothing stops it from generating many keys and committing to a
   favorable one before the match begins. Commit-and-reveal binds the server to
   one sequence; it does not prove that sequence was not cherry-picked. Closing
@@ -397,7 +421,7 @@ re-implementation in any language must reproduce them.
   then mixes in its own nonce, and the effective key derives from all
   contributions (e.g. via HKDF) so no single party controls the result. That
   requires engines to participate in a new required exchange, so it is a future
-  protocol version, not a v1 field (§11).
+  protocol version, not an optional field (§11).
 
 ## 9. Failures and forfeits
 
@@ -417,7 +441,7 @@ The forfeiting engine's opponent wins the match. Both engines are informed via
 `matchEnded` (`reason: "forfeit"`) where their connections still permit it (an
 engine that disconnected or sent unparseable frames may not be reachable); the
 offender's connection is then closed.
-There is no sanction beyond the match: version 1 has no rating, suspension, or
+There is no sanction beyond the match: the protocol has no rating, suspension, or
 retry semantics.
 
 One benign race is tolerated: if your match ends while your reply is in
@@ -465,11 +489,14 @@ The pool spans the whole match — every game, every decision. Then:
 
 Every decision query carries both clocks, in seconds (fractions allowed), as
 of the moment the query was issued — the pending decision's own cost is not
-yet debited. As everywhere, the fields are in your frame: `yourTimeRemainingSeconds`
-is the queried player's own pool.
+yet debited. The clocks are not position data, so they are not in the on-roll
+frame: they are relative to the engine receiving the query.
+`yourTimeRemainingSeconds` is your own pool and `opponentTimeRemainingSeconds`
+your opponent's — on a `cubeResponseQuery` too, where your opponent is the
+player on roll and the state's `onRoll…` fields are theirs.
 
 ```json
-{"type":"playQuery","requestId":"q-2","state":{"board":[0,-2,0,0,0,0,5,0,3,0,0,0,-5,5,0,0,0,-3,0,-5,0,0,0,0,2,0],"cubeValue":1,"cubeOwner":"centered","matchLength":7,"yourScore":0,"opponentScore":0,"isCrawford":false},"die1":3,"die2":1,"yourTimeRemainingSeconds":95.5,"opponentTimeRemainingSeconds":120}
+{"type":"playQuery","requestId":"q-2","state":{"board":[0,-2,0,0,0,0,5,0,3,0,0,0,-5,5,0,0,0,-3,0,-5,0,0,0,0,2,0],"cubeValue":1,"cubeOwner":"centered","matchLength":7,"onRollNeeds":7,"opponentNeeds":7,"isCrawford":false},"die1":3,"die2":1,"yourTimeRemainingSeconds":95.5,"opponentTimeRemainingSeconds":120}
 ```
 
 A per-decision cap needs no separate mode: `initialSeconds` =
@@ -480,7 +507,7 @@ All of this is additive under §2's unknown-field rule — an engine that ignore
 the fields plays identically, until its flag falls. Reading them is optional;
 the clock runs server-side regardless.
 
-## 11. Deliberate version-1 gaps
+## 11. Deliberate gaps
 
 Recorded so they read as decisions, not oversights — candidates for future
 versions:
@@ -492,15 +519,15 @@ versions:
   (a fresh opening position in the next query); only match start/end are
   announced.
 - **Forfeit scores.** On a forfeit the reported points may be `0`–`0`: the
-  match is decided by the forfeit itself, and version-1 servers may not
+  match is decided by the forfeit itself, and servers may not
   retain mid-match scores (§9).
 - **Clock arbitration.** In a time-control match (§10) the server's time
   measurement is authoritative and unilateral: the remaining-time fields are
-  informational, and version 1 gives an engine no way to audit or dispute a
+  informational, and the protocol gives an engine no way to audit or dispute a
   debit (no per-decision timing log on the wire).
 - **Dice non-selection.** Fair-mode dice (§8) prove the server did not adapt
   the rolls, but not that it did not cherry-pick a favorable committed
-  sequence — v1 uses server-only entropy. Contributory nonces close this in a
+  sequence — the server alone supplies the entropy. Contributory nonces close this in a
   future version (§8.4).
 - **Bearer-token registration.** The `engineKey` (§3.1) is a static bearer
   secret sent in the clear at the protocol level; `wss://` termination is the
@@ -533,3 +560,14 @@ versions:
     moves may come in any order and by either route. Version 1 already
     expressed a checker moved twice as two moves; this states the rule that
     implied. No field, value or message changes, so this stays version 1.
+- **2** — the frame rule restated (§4): every state is in the on-roll
+  player's frame, a `cubeResponseQuery` included, where the engine is the
+  negative side and the pre-double cube reads `"centered"` or `"onRoll"`. The
+  receiver-relative names go: `cubeOwner` `"you"` becomes `"onRoll"`, and
+  `yourScore` / `opponentScore` give way to the score's two kinds (§5) — a
+  match state carries `onRollNeeds` / `opponentNeeds`, a money state
+  `onRollScore` / `opponentScore`. A change of meaning, not an addition: a
+  version-1 engine would read a response query from the wrong side, so the
+  server rejects its hello (§3). The clock fields stay relative to the
+  receiving engine (§10.2). Everything else in version 1, its minor additions
+  included, carries over unchanged.

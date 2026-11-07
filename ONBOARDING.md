@@ -78,14 +78,17 @@ engines). You may play any number of matches over one connection.
 Once you are in a match the server drives it and owns everything authoritative —
 the dice (seeded and auditable), the rules, the state, and the refereeing
 (PROTOCOL.md, introduction). You answer exactly three kinds of query, each with
-its state **already expressed in your own frame** (PROTOCOL.md §4–§5), so you
-never ask "which side am I this time?":
+its state **in the on-roll player's frame** (PROTOCOL.md §4–§5); the query
+tells you which side you are:
 
-- **`playQuery`** — choose your play for the given dice (PROTOCOL.md §6). Reply
-  with `{from, to}` hops in your frame; an empty `moves` array means *no legal
-  play*. Hits are not encoded — the server derives them.
-- **`cubeOfferQuery`** — double or not (PROTOCOL.md §6).
-- **`cubeResponseQuery`** — take or pass a double (PROTOCOL.md §4, §6).
+- **`playQuery`** — you are on roll: choose your play for the given dice
+  (PROTOCOL.md §6). Reply with `{from, to}` hops in that frame, yours; an
+  empty `moves` array means *no legal play*. Hits are not encoded — the
+  server derives them.
+- **`cubeOfferQuery`** — you are on roll: double or not (PROTOCOL.md §6).
+- **`cubeResponseQuery`** — your opponent is on roll and has doubled: take or
+  pass. You are the negative side, your score is the opponent's field
+  (PROTOCOL.md §4, §6).
 
 An illegal or malformed reply, a disconnect, or (under a time control) an
 emptied clock forfeits the match — the forfeit taxonomy is PROTOCOL.md §9 and
@@ -121,8 +124,11 @@ var client = new EngineClient(
 await client.RunAsync(new Uri("ws://localhost:5251/engine"));
 ```
 
-- Every query state arrives in your frame — map it straight onto your agent
-  logic; there is no side to figure out (PROTOCOL.md §4).
+- Every query state arrives in the on-roll player's frame as an immutable
+  `GameSnapshot`, and the method called tells your agent its side: a cube
+  response is answered as the negative side, the opponent of the player on
+  roll (PROTOCOL.md §4). An agent that needs the move generator builds its
+  own board, `new BoardState(state.Board)`.
 - `onDiceVerified` fires after each fair-mode match with a
   `DiceVerificationReport`. A failed verdict is *reported*, never thrown — the
   policy on a suspect server is yours.

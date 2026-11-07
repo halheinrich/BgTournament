@@ -72,10 +72,10 @@ internal sealed class RemoteEngineAgent : IPlayAgent, ICubeAgent
 
     /// <inheritdoc/>
     public async ValueTask<Play> ChoosePlayAsync(
-        GameState state, int die1, int die2, CancellationToken cancellationToken = default)
+        GameSnapshot state, int die1, int die2, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(state);
-        var wireState = state.Snapshot().ToWireState();
+        var wireState = state.ToWireState();
 
         // Fair mode: this roll's 0-based stream index. The runner takes exactly
         // one roll immediately before this query, so the last-produced roll is
@@ -107,7 +107,7 @@ internal sealed class RemoteEngineAgent : IPlayAgent, ICubeAgent
                 ex);
         }
 
-        return MoveGenerator.ResolvePlay(state.Board, hops, die1, die2)
+        return MoveGenerator.ResolvePlay(new BoardState(state.Board), hops, die1, die2)
             ?? throw new AgentContractViolationException(
                 AgentContractViolationKind.IllegalPlay,
                 _seat,
@@ -117,10 +117,10 @@ internal sealed class RemoteEngineAgent : IPlayAgent, ICubeAgent
 
     /// <inheritdoc/>
     public async ValueTask<CubeAction> ChooseOfferAsync(
-        GameState state, CancellationToken cancellationToken = default)
+        GameSnapshot state, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(state);
-        var wireState = state.Snapshot().ToWireState();
+        var wireState = state.ToWireState();
         var (yourClock, opponentClock) = ClockStamp();
         var reply = await QueryAsync<CubeOfferReplyMessage>(
             id => new CubeOfferQueryMessage
@@ -144,10 +144,10 @@ internal sealed class RemoteEngineAgent : IPlayAgent, ICubeAgent
 
     /// <inheritdoc/>
     public async ValueTask<CubeAction> ChooseResponseAsync(
-        GameState state, CancellationToken cancellationToken = default)
+        GameSnapshot state, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(state);
-        var wireState = state.Snapshot().ToWireState();
+        var wireState = state.ToWireState();
         var (yourClock, opponentClock) = ClockStamp();
         var reply = await QueryAsync<CubeResponseReplyMessage>(
             id => new CubeResponseQueryMessage
