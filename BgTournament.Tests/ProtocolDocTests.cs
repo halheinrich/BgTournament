@@ -60,4 +60,32 @@ public class ProtocolDocTests
             Assert.Equal(example, reserialized);
         }
     }
+
+    /// <summary>
+    /// Every handshake example speaks the version this assembly implements, so
+    /// a version bump cannot leave an example an author would copy into a
+    /// rejected connection (halheinrich/backgammon#533).
+    /// </summary>
+    [Fact]
+    public void EveryFencedHandshakeExample_CarriesTheCurrentProtocolVersion()
+    {
+        var handshakes = FencedJsonLines()
+            .Select(example => (Example: example, Version: WireProtocol.Deserialize(example) switch
+            {
+                HelloMessage hello => (int?)hello.ProtocolVersion,
+                WelcomeMessage welcome => welcome.ProtocolVersion,
+                _ => null,
+            }))
+            .Where(h => h.Version is not null)
+            .ToList();
+
+        // Not vacuous: the doc shows both handshake messages.
+        Assert.Contains(handshakes, h => h.Example.Contains("\"type\":\"hello\"", StringComparison.Ordinal));
+        Assert.Contains(handshakes, h => h.Example.Contains("\"type\":\"welcome\"", StringComparison.Ordinal));
+
+        var stale = handshakes.Where(h => h.Version != WireProtocol.Version).Select(h => h.Example).ToList();
+        Assert.True(
+            stale.Count == 0,
+            $"PROTOCOL.md handshake examples not at version {WireProtocol.Version}:\n{string.Join("\n", stale)}");
+    }
 }

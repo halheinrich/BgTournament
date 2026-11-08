@@ -91,7 +91,7 @@ hello (additive under §2's unknown-field rule — a version-1 minor addition,
 §12 — and an unregistered engine sends exactly the hello it always did):
 
 ```json
-{"type":"hello","protocolVersion":1,"engineName":"MyBot","engineKey":"5f2c9a1d3e8b4c6f0a7d2e9b1c4f8a3d6e0b5c2f9a4d7e1b8c3f6a0d5e2b9c4f"}
+{"type":"hello","protocolVersion":2,"engineName":"MyBot","engineKey":"5f2c9a1d3e8b4c6f0a7d2e9b1c4f8a3d6e0b5c2f9a4d7e1b8c3f6a0d5e2b9c4f"}
 ```
 
 Rules, both policies:
